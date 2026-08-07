@@ -112,6 +112,11 @@ const rafAnimateScroll = (a, b, duration, ease, render) => new Promise(resolve =
 // this accumulated rendered-view size, animate the native scroll offset instead.
 const RAF_ANIMATE_SCROLL_THRESHOLD = 20000
 
+// Do not let ordinary finger jitter turn a long press into a page drag. Until
+// movement crosses this distance, leave the touch sequence entirely to the
+// browser so native text selection can recognize it.
+const TOUCH_SLOP = 10
+
 // collapsed range doesn't return client rects sometimes (or always?)
 // try make get a non-collapsed range or element
 const uncollapse = range => {
@@ -2096,12 +2101,7 @@ export class Paginator extends HTMLElement {
         const primaryTotal = this.#vertical ? totalDx : totalDy
         const crossTotal = this.#vertical ? totalDy : totalDx
 
-        if (primaryTotal < 2 || primaryTotal < crossTotal) {
-            state.x = x
-            state.y = y
-            state.t = e.timeStamp
-            return
-        }
+        if (primaryTotal <= TOUCH_SLOP || primaryTotal < crossTotal) return
 
         const dx = state.x - x
         const dy = state.y - y
@@ -2152,7 +2152,8 @@ export class Paginator extends HTMLElement {
         const isStylus = touch.touchType === 'stylus'
         const totalDx = Math.abs(touch.screenX - (state.startX ?? touch.screenX))
         const totalDy = Math.abs(touch.screenY - (state.startY ?? touch.screenY))
-        if (!state.axisLocked && (totalDx > 10 || totalDy > 10)) {
+        if (!state.axisLocked && totalDx <= TOUCH_SLOP && totalDy <= TOUCH_SLOP) return
+        if (!state.axisLocked) {
             if (totalDy > totalDx * 1.3) {
                 state.axisLocked = 'y'
                 state.aborted = true
@@ -2161,7 +2162,7 @@ export class Paginator extends HTMLElement {
             }
         }
         if (state.aborted) return
-        if (!isStylus && (totalDx > 10 || totalDy > 10 || state.didPreventDefault)) {
+        if (!isStylus && (totalDx > TOUCH_SLOP || totalDy > TOUCH_SLOP || state.didPreventDefault)) {
             e.preventDefault()
             state.didPreventDefault = true
         }
