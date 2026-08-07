@@ -209,7 +209,7 @@ export function ReaderScreen({ route, navigation }: Props) {
   const { mode: themeMode } = useTheme();
   const s = makeStyles(colors);
   const { bookId, cfi, highlight: shouldHighlight, openTTS } = route.params;
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const isWideLayout = SCREEN_WIDTH >= 768;
   const isIPadLayout = Platform.OS === "ios" && Platform.isPad;
   const shouldToggleSystemStatusBar = !isIPadLayout;
@@ -343,7 +343,6 @@ export function ReaderScreen({ route, navigation }: Props) {
   const controlsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const TOOLBAR_HIDE_OFFSET = 100;
   const toolbarAnim = useRef(new Animated.Value(TOOLBAR_HIDE_OFFSET)).current;
-  const readerPullAnim = useRef(new Animated.Value(0)).current;
   const lastCfiRef = useRef<string>("");
   const progressRef = useRef(0);
   const locationHistoryRef = useRef<string[]>([]);
@@ -814,18 +813,6 @@ export function ReaderScreen({ route, navigation }: Props) {
     onToggleBookmark: () => {
       handleToggleBookmark();
     },
-    onBookmarkPull: ({ offset, active }) => {
-      if (active) {
-        readerPullAnim.setValue(offset);
-        return;
-      }
-
-      Animated.timing(readerPullAnim, {
-        toValue: 0,
-        duration: 180,
-        useNativeDriver: true,
-      }).start();
-    },
     onSearchResult: (index: number, count: number) => {
       search.onSearchResult(index, count);
     },
@@ -921,6 +908,17 @@ export function ReaderScreen({ route, navigation }: Props) {
 
   bridgeRef.current = bridge;
   chapterTranslationBridgeRef.current = bridge;
+
+  useEffect(() => {
+    if (!webViewReady) return;
+    bridge.setBookmarkPullState({
+      bookmarked: isBookmarked,
+      pullToAdd: t("reader.bookmarks.pullToAdd", "Pull down to add bookmark"),
+      releaseToAdd: t("reader.bookmarks.releaseToAdd", "Release to add bookmark"),
+      pullToRemove: t("reader.bookmarks.pullToRemove", "Pull down to remove bookmark"),
+      releaseToRemove: t("reader.bookmarks.releaseToRemove", "Release to remove bookmark"),
+    });
+  }, [bridge.setBookmarkPullState, isBookmarked, t, webViewReady]);
 
   // ── useReaderTTS ──
   const tts = useReaderTTS({
@@ -1458,10 +1456,7 @@ export function ReaderScreen({ route, navigation }: Props) {
 
   return (
     <View style={[s.container, { paddingBottom: insets.bottom }]}>
-      <Animated.View
-        style={[s.readerStage, { transform: [{ translateY: readerPullAnim }] }]}
-        pointerEvents="box-none"
-      >
+      <View style={s.readerStage} pointerEvents="box-none">
         {/* WebView with foliate-js */}
         <View style={{ flex: 1 }}>
           <WebView
@@ -1519,7 +1514,7 @@ export function ReaderScreen({ route, navigation }: Props) {
             </View>
           </View>
         )}
-      </Animated.View>
+      </View>
 
       {/* ─── Bookmark Ribbon (top-right) ─── */}
       <BookmarkRibbon visible={isBookmarked} topOffset={0} />
