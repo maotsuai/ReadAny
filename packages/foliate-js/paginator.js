@@ -114,8 +114,10 @@ const RAF_ANIMATE_SCROLL_THRESHOLD = 20000
 
 // Do not let ordinary finger jitter turn a long press into a page drag. Until
 // movement crosses this distance, leave the touch sequence entirely to the
-// browser so native text selection can recognize it.
-const TOUCH_SLOP = 10
+// browser so native text selection can recognize it. This also matches the
+// mobile reader's pull-to-bookmark intent threshold, preventing either gesture
+// from moving content before the direction is known.
+const TOUCH_SLOP = 14
 
 // collapsed range doesn't return client rects sometimes (or always?)
 // try make get a non-collapsed range or element

@@ -520,10 +520,6 @@
       return armed ? bookmarkPullStateMeta.releaseToAdd : bookmarkPullStateMeta.pullToAdd;
     }
 
-    function setReaderTranslateY(offset, animated) {
-      return;
-    }
-
     function updatePullBookmarkUI(offset, armed) {
       const { indicator, text } = getPullBookmarkElements();
       const pullOffset = Math.max(0, Math.min(offset, 72));
@@ -537,11 +533,9 @@
         indicator.style.transform =
           `translate(-50%, ${Math.min(24, -12 + easedOffset * 0.68)}px) scale(${0.96 + Math.min(0.08, pullOffset / 360)})`;
       }
-      setReaderTranslateY(easedOffset, false);
-      postToRN('bookmarkPull', { offset: easedOffset, armed, active: pullOffset > 0 });
     }
 
-    function resetPullBookmarkUI(animated) {
+    function resetPullBookmarkUI() {
       const { indicator, text } = getPullBookmarkElements();
       bookmarkPullGestureActive = false;
       if (text) text.textContent = getPullBookmarkLabel(false);
@@ -551,8 +545,6 @@
         indicator.style.opacity = '0';
         indicator.style.transform = 'translate(-50%, -12px) scale(0.96)';
       }
-      setReaderTranslateY(0, animated !== false);
-      postToRN('bookmarkPull', { offset: 0, armed: false, active: false });
     }
 
     function getRendererContents() {
@@ -1495,7 +1487,7 @@
         readerElement = el;
         el.style.width = '100%';
         el.style.height = '100%';
-        resetPullBookmarkUI(false);
+        resetPullBookmarkUI();
 
         el.addEventListener('load', (e) => {
           const { doc, index, primary } = e.detail;
@@ -2456,7 +2448,7 @@ a { color: ${primary} !important; }
             deltaY < -INTENT_THRESHOLD / 2
           ) {
             pullState.cancelled = true;
-            resetPullBookmarkUI(false);
+            resetPullBookmarkUI();
             return;
           }
 
@@ -2474,7 +2466,7 @@ a { color: ${primary} !important; }
         }
 
         if (deltaY <= 0) {
-          resetPullBookmarkUI(false);
+          resetPullBookmarkUI();
           return;
         }
 
@@ -2507,7 +2499,7 @@ a { color: ${primary} !important; }
           e.changedTouches.length === 1 &&
           Date.now() - lastTriggeredAt >= COOLDOWN_MS;
 
-        resetPullBookmarkUI(true);
+        resetPullBookmarkUI();
 
         if (shouldToggle) {
           lastTriggeredAt = Date.now();
@@ -2522,7 +2514,7 @@ a { color: ${primary} !important; }
             window.setNavigationLocked(false);
           }
         } catch (err) { /* no-op */ }
-        resetPullBookmarkUI(true);
+        resetPullBookmarkUI();
       }, { passive: true, capture: true });
     }
 
