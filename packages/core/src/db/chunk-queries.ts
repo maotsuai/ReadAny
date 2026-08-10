@@ -1,32 +1,154 @@
 import type { Chunk } from "../types";
-import { getDB, getLocalDB, serializeEmbedding, deserializeEmbedding } from "./db-core";
+import { deserializeEmbedding, getDB, getLocalDB, serializeEmbedding } from "./db-core";
 
-export async function getChunks(bookId: string): Promise<Chunk[]> {
+function getChunkOrder(chunk: Pick<Chunk, "id" | "bookId" | "chapterIndex">): number {
+  const prefix = `${chunk.bookId}-${chunk.chapterIndex}-`;
+  const raw = chunk.id.startsWith(prefix)
+    ? chunk.id.slice(prefix.length)
+    : chunk.id.match(/(\d+)$/)?.[1];
+  const order = Number(raw);
+  return Number.isFinite(order) ? order : Number.MAX_SAFE_INTEGER;
+}
+
+interface ChunkRow {
+  id: string;
+  book_id: string;
+  chapter_index: number;
+  chapter_title: string;
+  content: string;
+  token_count: number;
+  start_cfi: string | null;
+  end_cfi: string | null;
+  segment_cfis: string | null;
+  embedding?: unknown;
+}
+
+interface ChunkOutlineRow {
+  id: string;
+  book_id: string;
+  chapter_index: number;
+  chapter_title: string;
+  preview: string;
+  start_cfi: string | null;
+  end_cfi: string | null;
+}
+
+export interface ChunkOutline {
+  id: string;
+  bookId: string;
+  chapterIndex: number;
+  chapterTitle: string;
+  preview: string;
+  startCfi: string;
+  endCfi: string;
+}
+
+function mapChunkRow(row: ChunkRow, includeEmbedding: boolean): Chunk {
+  let segmentCfis: string[] | undefined;
+  if (row.segment_cfis) {
+    try {
+      const parsed = JSON.parse(row.segment_cfis);
+      if (Array.isArray(parsed)) segmentCfis = parsed.filter((item) => typeof item === "string");
+    } catch {
+      console.warn(`[Chunks] Ignoring invalid segment_cfis JSON for ${row.id}`);
+    }
+  }
+
+  return {
+    id: row.id,
+    bookId: row.book_id,
+    chapterIndex: row.chapter_index,
+    chapterTitle: row.chapter_title,
+    content: row.content,
+    tokenCount: row.token_count,
+    startCfi: row.start_cfi || "",
+    endCfi: row.end_cfi || "",
+    segmentCfis,
+    ...(includeEmbedding ? { embedding: deserializeEmbedding(row.embedding) } : {}),
+  };
+}
+
+function sortChunks(chunks: Chunk[]): Chunk[] {
+  return chunks.sort(
+    (left, right) =>
+      left.chapterIndex - right.chapterIndex ||
+      getChunkOrder(left) - getChunkOrder(right) ||
+      left.id.localeCompare(right.id),
+  );
+}
+
+async function selectChunks(
+  bookId: string,
+  options: { includeEmbedding: boolean; chapterIndex?: number },
+): Promise<Chunk[]> {
   const database = await getLocalDB();
-  const rows = await database.select<{
-    id: string;
-    book_id: string;
-    chapter_index: number;
-    chapter_title: string;
-    content: string;
-    token_count: number;
-    start_cfi: string | null;
-    end_cfi: string | null;
-    segment_cfis: string | null;
-    embedding: unknown;
-  }>("SELECT * FROM chunks WHERE book_id = ? ORDER BY chapter_index, id", [bookId]);
-  return rows.map((r) => ({
-    id: r.id,
-    bookId: r.book_id,
-    chapterIndex: r.chapter_index,
-    chapterTitle: r.chapter_title,
-    content: r.content,
-    tokenCount: r.token_count,
-    startCfi: r.start_cfi || "",
-    endCfi: r.end_cfi || "",
-    segmentCfis: r.segment_cfis ? JSON.parse(r.segment_cfis) : undefined,
-    embedding: deserializeEmbedding(r.embedding),
-  }));
+  const columns = [
+    "id",
+    "book_id",
+    "chapter_index",
+    "chapter_title",
+    "content",
+    "token_count",
+    "start_cfi",
+    "end_cfi",
+    "segment_cfis",
+    ...(options.includeEmbedding ? ["embedding"] : []),
+  ].join(", ");
+  const chapterFilter = options.chapterIndex === undefined ? "" : " AND chapter_index = ?";
+  const params: unknown[] = [bookId];
+  if (options.chapterIndex !== undefined) params.push(options.chapterIndex);
+  const rows = await database.select<ChunkRow>(
+    `SELECT ${columns} FROM chunks WHERE book_id = ?${chapterFilter} ORDER BY chapter_index, id`,
+    params,
+  );
+  return sortChunks(rows.map((row) => mapChunkRow(row, options.includeEmbedding)));
+}
+
+/** Load all chunks including embeddings. Reserved for vector/BM25 search. */
+export async function getChunks(bookId: string): Promise<Chunk[]> {
+  return selectChunks(bookId, { includeEmbedding: true });
+}
+
+/** Load textual chunk metadata without reading or deserializing embedding blobs. */
+export async function getChunksWithoutEmbeddings(bookId: string): Promise<Chunk[]> {
+  return selectChunks(bookId, { includeEmbedding: false });
+}
+
+/** Load one chapter without embeddings so context/citation tools avoid scanning the whole book. */
+export async function getChapterChunks(bookId: string, chapterIndex: number): Promise<Chunk[]> {
+  return selectChunks(bookId, { includeEmbedding: false, chapterIndex });
+}
+
+/**
+ * Load only the fields needed for TOC, chapter resolution, and CFI boundaries.
+ * The SQL-side preview cap prevents metadata tools from materializing whole books.
+ */
+export async function getChunkOutlines(bookId: string): Promise<ChunkOutline[]> {
+  const database = await getLocalDB();
+  const rows = await database.select<ChunkOutlineRow>(
+    `SELECT id, book_id, chapter_index, chapter_title,
+            substr(content, 1, 500) AS preview, start_cfi, end_cfi
+     FROM chunks
+     WHERE book_id = ?
+     ORDER BY chapter_index, id`,
+    [bookId],
+  );
+  return rows
+    .map((row) => ({
+      id: row.id,
+      bookId: row.book_id,
+      chapterIndex: row.chapter_index,
+      chapterTitle: row.chapter_title,
+      preview: row.preview || "",
+      startCfi: row.start_cfi || "",
+      endCfi: row.end_cfi || "",
+    }))
+    .sort(
+      (left, right) =>
+        left.chapterIndex - right.chapterIndex ||
+        getChunkOrder(left) - getChunkOrder(right) ||
+        left.id.localeCompare(right.id),
+    );
 }
 
 export async function insertChunks(chunks: Chunk[]): Promise<void> {

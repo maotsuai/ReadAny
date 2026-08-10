@@ -15,7 +15,14 @@ import {
  * - Each book has its own active thread; general chat has its own.
  * - All threads are persisted to SQLite via core db module
  */
-import type { Message, MessageV2, ReasoningStep, SemanticContext, Thread, ToolCall } from "../types";
+import type {
+  Message,
+  MessageV2,
+  ReasoningStep,
+  SemanticContext,
+  Thread,
+  ToolCall,
+} from "../types";
 
 export type ChatStreamingStep = "thinking" | "tool_calling" | "responding" | "idle";
 
@@ -165,6 +172,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const removed = state.threads.find((t) => t.id === threadId);
       const newThreads = state.threads.filter((t) => t.id !== threadId);
       const updates: Partial<ChatState> = { threads: newThreads };
+
+      // The home AI history may point at either a general or a book thread.
+      if (removed?.bookId && state.generalActiveThreadId === threadId) {
+        const nextHomeThread = newThreads.find((thread) => !thread.bookId) ?? newThreads[0] ?? null;
+        updates.generalActiveThreadId = nextHomeThread?.id || null;
+      }
 
       if (removed?.bookId) {
         if (state.bookActiveThreadIds[removed.bookId] === threadId) {

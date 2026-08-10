@@ -55,11 +55,10 @@ function ThreadsSidebar({
   onSelect: (threadId: string) => void;
 }) {
   const { t } = useTranslation();
-  const getThreadsForContext = useChatStore((s) => s.getThreadsForContext);
-  const getActiveThreadId = useChatStore((s) => s.getActiveThreadId);
+  const threads = useChatStore((s) => s.threads);
+  const activeThreadId = useChatStore((s) => s.generalActiveThreadId);
   const removeThread = useChatStore((s) => s.removeThread);
-  const generalThreads = getThreadsForContext();
-  const activeThreadId = getActiveThreadId();
+  const books = useLibraryStore((s) => s.books);
 
   return (
     <div
@@ -81,21 +80,21 @@ function ThreadsSidebar({
           </button>
         </div>
         <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
-          {generalThreads.length === 0 && (
+          {threads.length === 0 && (
             <p className="py-8 text-center text-xs text-muted-foreground">
               {t("chat.noConversations")}
             </p>
           )}
           {(() => {
-            const grouped = groupThreadsByTime(generalThreads);
-            const sections: { key: string; label: string; threads: typeof generalThreads }[] = [
+            const grouped = groupThreadsByTime(threads);
+            const sections: { key: string; label: string; threads: typeof threads }[] = [
               { key: "today", label: t("chat.today"), threads: grouped.today },
               { key: "yesterday", label: t("chat.yesterday"), threads: grouped.yesterday },
               { key: "last7Days", label: t("chat.last7Days"), threads: grouped.last7Days },
               { key: "last30Days", label: t("chat.last30Days"), threads: grouped.last30Days },
             ];
 
-            const olderByMonth = new Map<string, typeof generalThreads>();
+            const olderByMonth = new Map<string, typeof threads>();
             for (const thread of grouped.older) {
               const monthLabel = getMonthLabel(thread.updatedAt);
               if (!olderByMonth.has(monthLabel)) {
@@ -152,6 +151,13 @@ function ThreadsSidebar({
                               {formatRelativeTimeShort(thread.updatedAt, t)}
                             </span>
                           </div>
+                          {thread.bookId && (
+                            <p className="mt-0.5 flex items-center gap-1 truncate text-[10px] text-primary/70">
+                              <BookOpen className="size-3 shrink-0" />
+                              {books.find((book) => book.id === thread.bookId)?.meta.title ||
+                                t("chat.bookConversation", "书内对话")}
+                            </p>
+                          )}
                           {preview && (
                             <p className="mt-0.5 truncate text-xs text-muted-foreground">
                               {preview}
@@ -228,14 +234,20 @@ export function ChatPage() {
   const threads = useChatStore((s) => s.threads);
   const initialized = useChatStore((s) => s.initialized);
   const loadAllThreads = useChatStore((s) => s.loadAllThreads);
-  const createThread = useChatStore((s) => s.createThread);
   const setGeneralActiveThread = useChatStore((s) => s.setGeneralActiveThread);
-  const getActiveThreadId = useChatStore((s) => s.getActiveThreadId);
-  const { bookTitle } = useChatReaderStore();
+  const setBookActiveThread = useChatStore((s) => s.setBookActiveThread);
+  const generalActiveThreadId = useChatStore((s) => s.generalActiveThreadId);
+  const { bookTitle, setActiveThreadContext } = useChatReaderStore();
   const books = useLibraryStore((s) => s.books);
 
-  // /chats page should only use general threads - always pass undefined for bookId
-  const { isStreaming, currentMessage, currentStep, sendMessage, stopStream } = useStreamingChat();
+  const activeThread = threads.find((thread) => thread.id === generalActiveThreadId);
+  const activeBook = activeThread?.bookId
+    ? books.find((book) => book.id === activeThread.bookId) || null
+    : null;
+  const { isStreaming, currentMessage, currentStep, sendMessage, stopStream } = useStreamingChat({
+    book: activeBook,
+    bookId: activeThread?.bookId,
+  });
 
   const [showThreads, setShowThreads] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
@@ -247,6 +259,10 @@ export function ChatPage() {
       loadAllThreads();
     }
   }, [initialized, loadAllThreads]);
+
+  useEffect(() => {
+    void setActiveThreadContext(activeThread?.bookId ? null : generalActiveThreadId);
+  }, [activeThread?.bookId, generalActiveThreadId, setActiveThreadContext]);
 
   // Close export menu on outside click
   useEffect(() => {
@@ -260,9 +276,6 @@ export function ChatPage() {
     return () => document.removeEventListener("mousedown", handler);
   }, [showExportMenu]);
 
-  const activeThreadId = getActiveThreadId();
-  const activeThread = threads.find((t) => t.id === activeThreadId);
-
   const handleSend = useCallback(
     async (content: string, deepThinking = false, spoilerFree = false) => {
       const { aiConfig } = useSettingsStore.getState();
@@ -273,15 +286,9 @@ export function ChatPage() {
         return;
       }
 
-      // /chats page should only use general threads (no bookId)
-      if (!activeThreadId) {
-        await createThread(undefined, content.slice(0, 50));
-        setTimeout(() => sendMessage(content, undefined, deepThinking, spoilerFree), 50);
-      } else {
-        sendMessage(content, undefined, deepThinking, spoilerFree);
-      }
+      await sendMessage(content, activeThread?.bookId, deepThinking, spoilerFree);
     },
-    [activeThreadId, createThread, sendMessage],
+    [activeThread?.bookId, sendMessage],
   );
 
   const handleNewThread = useCallback(() => {
@@ -369,7 +376,11 @@ export function ChatPage() {
       <ThreadsSidebar
         open={showThreads}
         onClose={() => setShowThreads(false)}
-        onSelect={(id) => setGeneralActiveThread(id)}
+        onSelect={(id) => {
+          const thread = threads.find((item) => item.id === id);
+          setGeneralActiveThread(id);
+          if (thread?.bookId) setBookActiveThread(thread.bookId, id);
+        }}
       />
       <div className="relative flex h-11 shrink-0 items-center justify-between border-b px-4">
         <div className="flex items-center gap-2">
@@ -381,15 +392,18 @@ export function ChatPage() {
           >
             <History className="size-4" />
           </button>
-          {bookTitle && (
+          {(activeBook?.meta.title || bookTitle) && (
             <span className="text-xs text-muted-foreground">
-              {t("chat.context")}: <span className="font-medium text-foreground">{bookTitle}</span>
+              {t("chat.context")}:{" "}
+              <span className="font-medium text-foreground">
+                {activeBook?.meta.title || bookTitle}
+              </span>
             </span>
           )}
         </div>
         <div className="flex items-center gap-0.5">
           <ModelSelector />
-          <ContextPopover />
+          {!activeThread?.bookId && <ContextPopover />}
           <div className="mx-1 h-4 w-px bg-border" />
           {allMessages.length > 0 && (
             <div className="relative" ref={exportMenuRef}>

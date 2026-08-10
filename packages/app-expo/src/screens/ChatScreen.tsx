@@ -27,9 +27,11 @@ import { useStreamingChat } from "@/hooks";
 import { useResponsiveLayout } from "@/hooks/use-responsive-layout";
 import { resolveActiveAIConfig } from "@/lib/ai/resolve-active-ai-config";
 import { useChatStore } from "@/stores/chat-store";
+import { useLibraryStore } from "@/stores/library-store";
+import { useChatReaderStore } from "@readany/core/stores/chat-reader-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { getPlatformService } from "@readany/core/services";
-import type { AttachedQuote } from "@readany/core/types";
+import type { AttachedQuote, CitationPart } from "@readany/core/types";
 import {
   convertToMessageV2,
   exportChatAsJSON,
@@ -160,26 +162,38 @@ export function ChatScreen() {
   const loadAllThreads = useChatStore((s) => s.loadAllThreads);
   const removeThread = useChatStore((s) => s.removeThread);
   const setGeneralActiveThread = useChatStore((s) => s.setGeneralActiveThread);
-  const getThreadsForContext = useChatStore((s) => s.getThreadsForContext);
+  const setBookActiveThread = useChatStore((s) => s.setBookActiveThread);
+  const books = useLibraryStore((s) => s.books);
+  const setActiveThreadContext = useChatReaderStore((s) => s.setActiveThreadContext);
 
   useEffect(() => {
     if (!initialized) loadAllThreads();
   }, [initialized, loadAllThreads]);
 
-  const generalThreads = getThreadsForContext();
-
-  // Streaming chat
-  const { isStreaming, currentMessage, currentStep, error, sendMessage, stopStream } =
-    useStreamingChat();
-
   // Messages - compute directly without useMemo to ensure reactivity
   const activeThread = generalActiveThreadId
     ? threads.find((th) => th.id === generalActiveThreadId)
     : null;
+  const activeBook = activeThread?.bookId
+    ? books.find((book) => book.id === activeThread.bookId) || null
+    : null;
 
-  const activeCurrentMessage = activeThread?.id === currentMessage?.threadId ? currentMessage : null;
+  useEffect(() => {
+    void setActiveThreadContext(activeThread?.bookId ? null : generalActiveThreadId);
+  }, [activeThread?.bookId, generalActiveThreadId, setActiveThreadContext]);
+
+  // A history selected on the home AI screen retains its original book context.
+  const { isStreaming, currentMessage, currentStep, error, sendMessage, stopStream } =
+    useStreamingChat({ book: activeBook, bookId: activeThread?.bookId });
+
+  const activeCurrentMessage =
+    activeThread?.id === currentMessage?.threadId ? currentMessage : null;
   const displayMessages = convertToMessageV2(activeThread?.messages || []);
-  const allMessages = mergeMessagesWithStreaming(displayMessages, activeCurrentMessage, isStreaming);
+  const allMessages = mergeMessagesWithStreaming(
+    displayMessages,
+    activeCurrentMessage,
+    isStreaming,
+  );
 
   // Handlers
   const handleSend = useCallback(
@@ -203,9 +217,16 @@ export function ChatScreen() {
         return;
       }
 
-      await sendMessage(text, undefined, deepThinking, spoilerFree, quotes, resolvedAIConfig);
+      await sendMessage(
+        text,
+        activeThread?.bookId,
+        deepThinking,
+        spoilerFree,
+        quotes,
+        resolvedAIConfig,
+      );
     },
-    [sendMessage, navigation, t],
+    [activeThread?.bookId, sendMessage, navigation, t],
   );
 
   const handleNewThread = useCallback(() => {
@@ -215,10 +236,23 @@ export function ChatScreen() {
 
   const handleSelectThread = useCallback(
     (threadId: string) => {
+      const thread = threads.find((item) => item.id === threadId);
       setGeneralActiveThread(threadId);
+      if (thread?.bookId) setBookActiveThread(thread.bookId, threadId);
       closeSidebar();
     },
-    [setGeneralActiveThread, closeSidebar],
+    [threads, setGeneralActiveThread, setBookActiveThread, closeSidebar],
+  );
+
+  const handleCitationClick = useCallback(
+    (citation: CitationPart) => {
+      navigation.navigate("Reader", {
+        bookId: citation.bookId,
+        cfi: citation.cfi || undefined,
+        highlight: Boolean(citation.cfi),
+      });
+    },
+    [navigation],
   );
 
   const formatTime = useCallback((ts: number) => formatRelativeTimeShort(ts, t), [t]);
@@ -260,15 +294,15 @@ export function ChatScreen() {
   }, [allMessages, exportOpts, t]);
 
   const groupedThreads = useMemo(() => {
-    const grouped = groupThreadsByTime(generalThreads);
-    const sections: { key: string; label: string; threads: typeof generalThreads }[] = [
+    const grouped = groupThreadsByTime(threads);
+    const sections: { key: string; label: string; threads: typeof threads }[] = [
       { key: "today", label: t("chat.today", "今天"), threads: grouped.today },
       { key: "yesterday", label: t("chat.yesterday", "昨天"), threads: grouped.yesterday },
       { key: "last7Days", label: t("chat.last7Days", "7 天内"), threads: grouped.last7Days },
       { key: "last30Days", label: t("chat.last30Days", "30 天内"), threads: grouped.last30Days },
     ];
 
-    const olderByMonth = new Map<string, typeof generalThreads>();
+    const olderByMonth = new Map<string, typeof threads>();
     for (const thread of grouped.older) {
       const monthLabel = getMonthLabel(thread.updatedAt);
       let monthThreads = olderByMonth.get(monthLabel);
@@ -287,7 +321,7 @@ export function ChatScreen() {
     }
 
     return sections;
-  }, [generalThreads, t]);
+  }, [threads, t]);
 
   const renderSidebarContent = useCallback(
     (closable: boolean) => (
@@ -309,7 +343,7 @@ export function ChatScreen() {
           contentContainerStyle={{ paddingBottom: 20 }}
           showsVerticalScrollIndicator={false}
         >
-          {generalThreads.length === 0 ? (
+          {threads.length === 0 ? (
             <View style={s.sidebarEmpty}>
               <Text style={s.sidebarEmptyText}>{t("chat.noConversations", "暂无对话")}</Text>
             </View>
@@ -345,7 +379,14 @@ export function ChatScreen() {
                           </View>
                           {preview ? (
                             <Text style={s.threadPreview} numberOfLines={1}>
-                              {preview}
+                              {thread.bookId
+                                ? `${books.find((book) => book.id === thread.bookId)?.meta.title || t("chat.bookConversation", "书内对话")} · ${preview}`
+                                : preview}
+                            </Text>
+                          ) : thread.bookId ? (
+                            <Text style={s.threadPreview} numberOfLines={1}>
+                              {books.find((book) => book.id === thread.bookId)?.meta.title ||
+                                t("chat.bookConversation", "书内对话")}
                             </Text>
                           ) : null}
                         </View>
@@ -371,8 +412,9 @@ export function ChatScreen() {
       colors.foreground,
       colors.mutedForeground,
       formatTime,
+      books,
       generalActiveThreadId,
-      generalThreads.length,
+      threads.length,
       groupedThreads,
       handleNewThread,
       handleSelectThread,
@@ -403,7 +445,7 @@ export function ChatScreen() {
             </View>
             <View style={s.headerRight}>
               <ModelSelector onNavigateToSettings={() => navigation.navigate("AISettings")} />
-              <ContextPopover />
+              {!activeThread?.bookId && <ContextPopover />}
               {allMessages.length > 0 && (
                 <>
                   <TouchableOpacity
@@ -466,6 +508,7 @@ export function ChatScreen() {
                   messages={allMessages}
                   isStreaming={isStreaming}
                   currentStep={currentStep}
+                  onCitationClick={handleCitationClick}
                 />
               ) : (
                 <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
@@ -610,8 +653,6 @@ const makeStyles = (
       justifyContent: "space-between",
       height: 44,
       paddingHorizontal: layout.isTabletLandscape ? 20 : 12,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.border,
       backgroundColor: colors.background,
       zIndex: 10,
     },

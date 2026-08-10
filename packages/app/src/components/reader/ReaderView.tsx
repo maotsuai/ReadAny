@@ -30,6 +30,7 @@ import { useNotebookStore } from "@/stores/notebook-store";
 import { useReaderStore } from "@/stores/reader-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useTTSStore } from "@/stores/tts-store";
+import { readingContextService } from "@readany/core/ai/reading-context-service";
 import { useChapterTranslation } from "@readany/core/hooks";
 import { getPlatformService } from "@readany/core/services";
 import { getCSSFontFace, useFontStore, useReadingSessionStore } from "@readany/core/stores";
@@ -420,6 +421,7 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
   const readerTab = useReaderStore((s) => s.tabs[tabId]);
   const removeReaderTab = useReaderStore((s) => s.removeTab);
   const appTab = useAppStore((s) => s.tabs.find((t) => t.id === tabId));
+  const isActiveReaderTab = useAppStore((s) => s.activeTabId === tabId);
   const closeAppTab = useAppStore((s) => s.removeTab);
   const viewSettings = useSettingsStore((s) => s.readSettings);
   const updateReadSettings = useSettingsStore((s) => s.updateReadSettings);
@@ -787,6 +789,10 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
   // UI state
   const [selection, setSelection] = useState<BookSelection | null>(null);
   const [selectionPos, setSelectionPos] = useState({ x: 0, y: 0 });
+
+  useEffect(() => {
+    if (!selection) readingContextService.clearSelection(bookId);
+  }, [bookId, selection]);
   const [tocItems, setTocItems] = useState<TOCItem[]>([]);
   const [showSearch, setShowSearch] = useState(false);
   const [showToc, setShowToc] = useState(false);
@@ -1483,6 +1489,18 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
       setSelection(sel);
       if (sel) {
         setSelectedText(tabId, sel.text, null);
+        if (sel.cfi) {
+          const context = readingContextService.getContextForBook(bookId);
+          readingContextService.updateSelection(
+            {
+              text: sel.text,
+              cfi: sel.cfi,
+              chapterIndex: sel.chapterIndex ?? context?.currentChapter.index ?? 0,
+              chapterTitle: context?.currentChapter.title || "",
+            },
+            bookId,
+          );
+        }
         if (sel.rects.length > 0) {
           // SelectionPopover uses absolute positioning relative to containerRef
           const containerRect = containerRef.current?.getBoundingClientRect();
@@ -1565,9 +1583,10 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
         }
       } else {
         setSelectedText(tabId, "", null);
+        readingContextService.clearSelection(bookId);
       }
     },
-    [tabId, setSelectedText, toolbarVisible],
+    [tabId, setSelectedText, toolbarVisible, bookId],
   );
 
   // --- Navigation (for toolbar buttons) ---
@@ -1737,6 +1756,16 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
       };
 
       setSelection(sel);
+      const context = readingContextService.getContextForBook(bookId);
+      readingContextService.updateSelection(
+        {
+          text: highlight.text,
+          cfi,
+          chapterIndex: index,
+          chapterTitle: highlight.chapterTitle || context?.currentChapter.title || "",
+        },
+        bookId,
+      );
 
       // Position the popover
       if (containerRect && offsetRects.length > 0) {
@@ -1817,6 +1846,8 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
           selectedText: selection.text,
           bookId,
           chapterTitle: readerTab?.chapterTitle,
+          chapterIndex: selection.chapterIndex,
+          cfi: selection.cfi,
         }),
       );
 
@@ -1830,6 +1861,8 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
             selectedText: selection.text,
             bookId,
             chapterTitle: readerTab?.chapterTitle,
+            chapterIndex: selection.chapterIndex,
+            cfi: selection.cfi,
           },
         }),
       );
@@ -2940,10 +2973,12 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
               <FoliateViewer
                 ref={foliateRef}
                 bookKey={bookId}
+                bookTitle={book?.meta.title || ""}
                 bookDoc={bookDoc}
                 format={bookFormat}
                 viewSettings={viewSettingsWithFonts}
                 lastLocation={book?.currentCfi || undefined}
+                active={isActiveReaderTab}
                 onRelocate={handleRelocate}
                 onTocReady={handleTocReady}
                 onLoaded={handleLoaded}

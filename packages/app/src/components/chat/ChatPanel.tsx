@@ -141,6 +141,10 @@ export function ChatPanel({ book, onNavigateToCitation }: ChatPanelProps) {
       id: crypto.randomUUID(),
       text: selection.text,
       source: selection.chapterTitle || context.currentChapter.title,
+      bookId: context.bookId,
+      chapterTitle: selection.chapterTitle || context.currentChapter.title,
+      chapterIndex: selection.chapterIndex,
+      cfi: selection.cfi,
     };
 
     setAttachedQuotes((prev) => {
@@ -161,6 +165,10 @@ export function ChatPanel({ book, onNavigateToCitation }: ChatPanelProps) {
             id: crypto.randomUUID(),
             text: detail.selectedText,
             source: detail.chapterTitle,
+            bookId: detail.bookId || bookId,
+            chapterTitle: detail.chapterTitle,
+            chapterIndex: detail.chapterIndex,
+            cfi: detail.cfi,
           };
           setAttachedQuotes((prev) => {
             if (prev.some((q) => q.text === newQuote.text)) return prev;
@@ -183,6 +191,10 @@ export function ChatPanel({ book, onNavigateToCitation }: ChatPanelProps) {
           id: crypto.randomUUID(),
           text: detail.selectedText,
           source: detail.chapterTitle,
+          bookId: detail.bookId || bookId,
+          chapterTitle: detail.chapterTitle,
+          chapterIndex: detail.chapterIndex,
+          cfi: detail.cfi,
         };
         setAttachedQuotes((prev) => {
           // Avoid duplicate text

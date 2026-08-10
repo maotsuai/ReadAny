@@ -1,11 +1,14 @@
 import { estimateTokens } from "../../rag/chunker";
+import { compareCfiPosition } from "../../reader/annotation-order";
+import { resolveChapterReference } from "../chapter-reference-resolver";
 import type { FallbackChapter } from "../fallback-content-service";
 import {
   buildFallbackSnippet,
   findFallbackSegmentByTerms,
   getFallbackChaptersForBook,
 } from "../fallback-source-resolver";
-import { resolveChapterReference } from "../chapter-reference-resolver";
+import { resolveReadingChapterIndex } from "../reading-context-resolver";
+import { readingContextService } from "../reading-context-service";
 import type { ToolDefinition } from "./tool-types";
 
 const SEARCH_TOKEN_BUDGET = 3600;
@@ -19,6 +22,33 @@ function normalize(value: string): string {
 
 function normalizeQuery(value: string): string {
   return value.normalize("NFKC").toLowerCase().replace(/\s+/g, "");
+}
+
+function extractSearchTerms(query: string): string[] {
+  const tokens = normalize(query)
+    .split(/[\s,，。.!?;；:：、]+/)
+    .filter(Boolean);
+  const terms = new Set(tokens);
+
+  for (const token of tokens) {
+    const cjk = token.match(
+      /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu,
+    );
+    for (const sequence of cjk ?? []) {
+      const cleaned = sequence.replace(
+        /(?:这本书|這本書|为什么|為什麼|怎么|怎麼|如何|请问|請問|一下|什么|什麼|について|とは|왜|어떻게)/gu,
+        "",
+      );
+      if (cleaned.length >= 2) terms.add(cleaned);
+      for (let size = 2; size <= Math.min(4, cleaned.length); size += 1) {
+        for (let index = 0; index <= cleaned.length - size; index += 1) {
+          terms.add(cleaned.slice(index, index + size));
+        }
+      }
+    }
+  }
+
+  return [...terms].filter((term) => term.length > 0);
 }
 
 function clampLimit(value: unknown, fallback = DEFAULT_TOC_LIMIT): number {
@@ -77,15 +107,20 @@ export function createFallbackTocTool(bookId: string): ToolDefinition {
         description: "Whether to include short previews for returned chapters (default false)",
       },
     },
-    execute: async (args) => {
-      const data = await getFallbackChaptersForBook(bookId);
+    execute: async (args, context) => {
+      const data = await getFallbackChaptersForBook(bookId, context?.signal);
       if ("error" in data) return data;
 
-      let chapters = data.chapters.map((chapter) => ({
-        index: chapter.index,
-        title: chapter.title,
-        content: chapter.content,
-      }));
+      const maxChapterIndex = Number(args._maxChapterIndex);
+      const hasChapterBoundary = Number.isInteger(maxChapterIndex) && maxChapterIndex >= 0;
+      let chapters = data.chapters
+        .filter((chapter) => !hasChapterBoundary || chapter.index <= maxChapterIndex)
+        .map((chapter) => ({
+          index: chapter.index,
+          title: chapter.title,
+          content: chapter.content,
+        }));
+      const availableChapterCount = chapters.length;
       const query = String(args.query || "").trim();
       const aroundChapter =
         typeof args.aroundChapter === "number" ? Number(args.aroundChapter) : undefined;
@@ -116,7 +151,7 @@ export function createFallbackTocTool(bookId: string): ToolDefinition {
             ? { preview: chapter.content.replace(/\s+/g, " ").trim().slice(0, 180) }
             : {}),
         })),
-        totalChapters: data.chapters.length,
+        totalChapters: hasChapterBoundary ? availableChapterCount : data.chapters.length,
         matchedChapters: chapters.length,
         returned: pagedChapters.length,
         offset,
@@ -149,13 +184,19 @@ export function createFallbackResolveChapterReferenceTool(bookId: string): ToolD
         description: "Maximum candidates to return when ambiguous (default 3)",
       },
     },
-    execute: async (args) => {
-      const data = await getFallbackChaptersForBook(bookId);
+    execute: async (args, context) => {
+      const data = await getFallbackChaptersForBook(bookId, context?.signal);
       if ("error" in data) return data;
+
+      const maxChapterIndex = Number(args._maxChapterIndex);
+      const chapters =
+        Number.isInteger(maxChapterIndex) && maxChapterIndex >= 0
+          ? data.chapters.filter((chapter) => chapter.index <= maxChapterIndex)
+          : data.chapters;
 
       return resolveChapterReference(
         String(args.query || ""),
-        data.chapters.map((chapter) => ({
+        chapters.map((chapter) => ({
           chapterIndex: chapter.index,
           chapterTitle: chapter.title,
           preview: chapter.content.slice(0, 500),
@@ -175,22 +216,34 @@ export function createFallbackSearchTool(bookId: string): ToolDefinition {
       query: { type: "string", description: "Keywords or phrase to search for", required: true },
       topK: { type: "number", description: "Number of chapters/snippets to return (default: 5)" },
     },
-    execute: async (args) => {
-      const data = await getFallbackChaptersForBook(bookId);
+    execute: async (args, context) => {
+      const data = await getFallbackChaptersForBook(bookId, context?.signal);
       if ("error" in data) return data;
 
       const query = String(args.query || "").trim();
       const topK = Math.max(1, Math.min(10, Number(args.topK) || 5));
-      const terms = normalize(query)
-        .split(/[\s,，。.!?;；:：、]+/)
-        .filter(Boolean);
+      const terms = extractSearchTerms(query);
       if (terms.length === 0) return { error: "Query is empty" };
 
-      const ranked = data.chapters
+      const maxChapterIndex = Number(args._maxChapterIndex);
+      const maxCfi = String(args._maxCfi || "").trim();
+      const hasChapterBoundary = Number.isInteger(maxChapterIndex) && maxChapterIndex >= 0;
+      const searchableChapters = data.chapters.flatMap((chapter) => {
+        if (hasChapterBoundary && chapter.index > maxChapterIndex) return [];
+        if (!hasChapterBoundary || chapter.index < maxChapterIndex || !maxCfi) return [chapter];
+        const segments = (chapter.segments ?? []).filter(
+          (segment) => Boolean(segment.cfi) && compareCfiPosition(String(segment.cfi), maxCfi) < 0,
+        );
+        if (segments.length === 0) return [];
+        return [
+          { ...chapter, segments, content: segments.map((segment) => segment.text).join("\n\n") },
+        ];
+      });
+      const allRanked = searchableChapters
         .map((chapter) => ({ chapter, score: scoreChapter(chapter, terms) }))
         .filter((item) => item.score > 0)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, topK);
+        .sort((a, b) => b.score - a.score);
+      const ranked = allRanked.slice(0, topK);
 
       let totalTokens = 0;
       const results = [];
@@ -225,7 +278,7 @@ export function createFallbackSearchTool(bookId: string): ToolDefinition {
       return {
         query,
         results,
-        totalResults: ranked.length,
+        totalResults: allRanked.length,
         returnedResults: results.length,
         totalTokens,
         tokenBudget: SEARCH_TOKEN_BUDGET,
@@ -247,12 +300,34 @@ export function createFallbackChapterContextTool(bookId: string): ToolDefinition
         description: "Chapter index from fallbackToc",
         required: true,
       },
+      cfi: {
+        type: "string",
+        description:
+          "Optional reader CFI to center the returned segments around. For the current page, pass currentCfi from getSurroundingContext.",
+      },
+      range: {
+        type: "number",
+        description: "Number of source segments before and after the CFI anchor (default: 8)",
+      },
     },
-    execute: async (args) => {
-      const data = await getFallbackChaptersForBook(bookId);
+    execute: async (args, context) => {
+      const data = await getFallbackChaptersForBook(bookId, context?.signal);
       if ("error" in data) return data;
 
-      const chapterIndex = Number(args.chapterIndex);
+      const requestedChapterIndex = Number(args.chapterIndex);
+      if (!Number.isInteger(requestedChapterIndex) || requestedChapterIndex < 0) {
+        return { error: "chapterIndex must be a non-negative integer" };
+      }
+      const readingContext = readingContextService.getContextForBook(bookId);
+      const resolvedCurrentIndex = readingContext
+        ? await resolveReadingChapterIndex({
+            bookId,
+            context: readingContext,
+            indexed: false,
+            signal: context?.signal,
+          })
+        : undefined;
+      const chapterIndex = requestedChapterIndex;
       const chapter = data.chapters.find((item) => item.index === chapterIndex);
       if (!chapter) return { error: `Chapter ${chapterIndex} not found` };
 
@@ -274,7 +349,39 @@ export function createFallbackChapterContextTool(bookId: string): ToolDefinition
       }> = [];
       let totalTokens = 0;
 
-      for (const segment of chapter.segments ?? []) {
+      const allSegments = (chapter.segments ?? []).filter((segment) => segment.text?.trim());
+      const requestedCfi = String(args.cfi || "").trim();
+      const anchorCfi =
+        requestedCfi ||
+        (resolvedCurrentIndex === chapterIndex ? readingContext?.currentPosition.cfi || "" : "");
+      const maxCfi = String(args._maxCfi || "").trim();
+      const anchorIndex = anchorCfi
+        ? Math.max(
+            0,
+            allSegments.findIndex((segment, index) => {
+              const next = allSegments[index + 1];
+              return (
+                Boolean(segment.cfi) &&
+                compareCfiPosition(segment.cfi, anchorCfi) <= 0 &&
+                (!next?.cfi || compareCfiPosition(anchorCfi, next.cfi) < 0)
+              );
+            }),
+          )
+        : 0;
+      const rawRange = Number(args.range);
+      const range = Math.max(0, Math.min(40, Number.isFinite(rawRange) ? rawRange : 8));
+      const startSegmentIndex = anchorCfi ? Math.max(0, anchorIndex - range) : 0;
+      const endSegmentIndex = anchorCfi
+        ? Math.min(allSegments.length, anchorIndex + range + 1)
+        : allSegments.length;
+      const selectedSegments = allSegments
+        .slice(startSegmentIndex, endSegmentIndex)
+        .filter(
+          (segment) =>
+            !maxCfi || (Boolean(segment.cfi) && compareCfiPosition(segment.cfi, maxCfi) < 0),
+        );
+
+      for (const segment of selectedSegments) {
         const text = segment.text?.trim();
         if (!text) continue;
         const tokens = estimateTokens(text);
@@ -310,7 +417,7 @@ export function createFallbackChapterContextTool(bookId: string): ToolDefinition
         if (shouldTruncateFirstSegment) break;
       }
 
-      if (chunks.length === 0) {
+      if (chunks.length === 0 && !maxCfi) {
         const tokens = estimateTokens(chapter.content);
         const content =
           tokens > CHAPTER_TOKEN_BUDGET
@@ -326,16 +433,37 @@ export function createFallbackChapterContextTool(bookId: string): ToolDefinition
         });
       }
 
+      if (chunks.length === 0 && maxCfi) {
+        return {
+          error: "No chapter content is available before the protected reading position",
+          chapterIndex: chapter.index,
+          spoilerProtected: true,
+        };
+      }
+
       const content = contentParts.join("\n\n");
 
       return {
         chapterTitle: chapter.title,
         chapterIndex: chapter.index,
+        requestedChapterIndex,
+        anchor: {
+          cfi: anchorCfi || undefined,
+          segmentIndex: anchorCfi ? anchorIndex : undefined,
+        },
         content,
         sourceRefs,
         totalTokens,
         tokenBudget: CHAPTER_TOKEN_BUDGET,
-        truncated: estimateTokens(chapter.content) > totalTokens,
+        coverage: {
+          totalSegments: allSegments.length,
+          startSegmentIndex,
+          endSegmentIndex: Math.max(startSegmentIndex, startSegmentIndex + chunks.length - 1),
+        },
+        truncated:
+          startSegmentIndex > 0 ||
+          startSegmentIndex + chunks.length < allSegments.length ||
+          estimateTokens(content) >= CHAPTER_TOKEN_BUDGET,
         instruction:
           "Summarize or analyze this chapter using only the returned content. If the specific chunk you cite has a non-empty cfi, you may call addCitation with that exact cfi and quotedText. If no cfi is present, cite chapterTitle/chapterIndex in plain text.",
       };

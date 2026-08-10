@@ -70,6 +70,9 @@ export {
   updateReadingSession,
   // Chunk queries
   getChunks,
+  getChunksWithoutEmbeddings,
+  getChapterChunks,
+  getChunkOutlines,
   insertChunks,
   deleteChunks,
   clearVectorizationFlagsWithoutLocalChunks,
@@ -82,3 +85,4 @@ export {
 } from "./database";
 
 export type { HighlightWithBook } from "./database";
+export type { ChunkOutline } from "./database";

@@ -319,23 +319,94 @@ function pickPaginatedVisibleRange(
 ) {
   const candidates = getPaginatedVisibleRangeCandidates(renderer);
   if (candidates.length <= 1) return candidates[0] ?? null;
+  const preference: Record<PaginatedVisibleRange["source"], number> = {
+    renderer: 3,
+    "legacy-offset": 2,
+    "size-fallback": 1,
+  };
+  return [...candidates]
+    .map((range) => ({ range, score: scorePaginatedVisibleRange(doc, range) }))
+    .sort(
+      (left, right) =>
+        right.score - left.score || preference[right.range.source] - preference[left.range.source],
+    )[0].range;
+}
 
-  const legacyRange = candidates.find((range) => range.source === "legacy-offset") ?? null;
-  if (legacyRange && scorePaginatedVisibleRange(doc, legacyRange) > 0) {
-    return legacyRange;
+function extractVisibleTextFromView(view: FoliateView | null, container?: HTMLElement | null) {
+  const renderer = view?.renderer;
+  const contents = getRendererContents(view).filter((content) => content.doc);
+  if (!renderer || contents.length === 0) return "";
+
+  const primary =
+    contents.find((content) => content.index === renderer.primaryIndex) ?? contents[0] ?? null;
+  const candidates = renderer.scrolled ? contents : primary ? [primary] : [];
+  const viewport = container?.getBoundingClientRect() ?? {
+    left: 0,
+    top: 0,
+    right: window.innerWidth,
+    bottom: window.innerHeight,
+  };
+  const visibleTexts: string[] = [];
+  let totalLength = 0;
+
+  for (const content of candidates) {
+    const doc = content.doc;
+    if (!doc?.body) continue;
+    const paginatedRange = !renderer.scrolled ? pickPaginatedVisibleRange(doc, renderer) : null;
+    const iframe = doc.defaultView?.frameElement as HTMLIFrameElement | null;
+    const iframeRect = iframe?.getBoundingClientRect();
+    const scaleX =
+      iframe && iframe.clientWidth > 0 && iframeRect ? iframeRect.width / iframe.clientWidth : 1;
+    const scaleY =
+      iframe && iframe.clientHeight > 0 && iframeRect ? iframeRect.height / iframe.clientHeight : 1;
+    const win = doc.defaultView;
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: acceptTTSNode,
+    });
+
+    for (let textNode = walker.nextNode(); textNode; textNode = walker.nextNode()) {
+      const text = normalizeTTSSegmentText(textNode.nodeValue);
+      if (!text) continue;
+      try {
+        const range = doc.createRange();
+        range.selectNodeContents(textNode);
+        const rects = Array.from(range.getClientRects()).filter(
+          (rect) => rect.width > 0 && rect.height > 0,
+        );
+        const isVisible = rects.some((rect) => {
+          if (paginatedRange) return rectIntersectsPaginatedRange(rect, paginatedRange);
+          if (iframeRect) {
+            const left = iframeRect.left + rect.left * scaleX;
+            const right = iframeRect.left + rect.right * scaleX;
+            const top = iframeRect.top + rect.top * scaleY;
+            const bottom = iframeRect.top + rect.bottom * scaleY;
+            return (
+              right > viewport.left &&
+              left < viewport.right &&
+              bottom > viewport.top &&
+              top < viewport.bottom
+            );
+          }
+          return Boolean(
+            win &&
+              rect.right > 0 &&
+              rect.left < win.innerWidth &&
+              rect.bottom > 0 &&
+              rect.top < win.innerHeight,
+          );
+        });
+        if (!isVisible) continue;
+        visibleTexts.push(text);
+        totalLength += text.length + 1;
+        if (totalLength >= 4000) break;
+      } catch {
+        // Ignore text nodes that cannot be measured.
+      }
+    }
+    if (totalLength >= 4000) break;
   }
 
-  const rendererRange = candidates.find((range) => range.source === "renderer") ?? null;
-  if (rendererRange && scorePaginatedVisibleRange(doc, rendererRange) > 0) {
-    return rendererRange;
-  }
-
-  const fallbackRange = candidates.find((range) => range.source === "size-fallback") ?? null;
-  if (fallbackRange && scorePaginatedVisibleRange(doc, fallbackRange) > 0) {
-    return fallbackRange;
-  }
-
-  return legacyRange ?? rendererRange ?? fallbackRange ?? candidates[0];
+  return visibleTexts.join(" ").trim().slice(0, 4000);
 }
 
 function getIframeClickMetrics(doc: Document, container: HTMLElement | null, clientX: number) {
@@ -653,10 +724,13 @@ export interface FoliateViewerHandle {
 
 interface FoliateViewerProps {
   bookKey: string;
+  bookTitle?: string;
   bookDoc: BookDoc;
   format: BookFormat;
   viewSettings: ViewSettings;
   lastLocation?: string;
+  /** Only the foreground reader may publish global AI reading context. */
+  active?: boolean;
   onRelocate?: (detail: RelocateDetail) => void;
   onTocReady?: (toc: TOCItem[]) => void;
   onLoaded?: () => void;
@@ -689,10 +763,12 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
   function FoliateViewer(
     {
       bookKey,
+      bookTitle,
       bookDoc,
       format,
       viewSettings,
       lastLocation,
+      active = true,
       onRelocate,
       onTocReady,
       onLoaded,
@@ -716,6 +792,62 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
     const isFixedLayout = isFixedLayoutBook(format, bookDoc);
     // Track when view is ready so hooks/events re-bind
     const [viewReady, setViewReady] = useState(false);
+    const lastRelocateDetailRef = useRef<RelocateDetail | null>(null);
+    const activeRef = useRef(active);
+    activeRef.current = active;
+
+    const syncAiReadingContext = useCallback(
+      (detail: RelocateDetail) => {
+        const previous = readingContextService.getContextForBook(bookKey);
+        const sectionIndex =
+          detail.section?.current ??
+          viewRef.current?.renderer?.primaryIndex ??
+          previous?.currentChapter.index ??
+          0;
+        void readingContextService.updateContext({
+          bookId: bookKey,
+          bookTitle: bookTitle || previous?.bookTitle || "",
+          currentChapter: {
+            index: sectionIndex,
+            title:
+              detail.tocItem?.label ||
+              previous?.currentChapter.title ||
+              `Section ${sectionIndex + 1}`,
+            href: detail.tocItem?.href || previous?.currentChapter.href || "",
+          },
+          currentPosition: {
+            cfi: detail.cfi || previous?.currentPosition.cfi || "",
+            percentage: detail.fraction ?? previous?.currentPosition.percentage ?? 0,
+            page: detail.page?.current ?? previous?.currentPosition.page,
+          },
+        });
+      },
+      [bookKey, bookTitle],
+    );
+
+    useEffect(() => {
+      if (!viewReady || !active) return;
+      return readingContextService.registerSurroundingTextProvider(bookKey, () =>
+        extractVisibleTextFromView(viewRef.current, containerRef.current),
+      );
+    }, [active, bookKey, viewReady]);
+
+    useEffect(() => {
+      if (active && lastRelocateDetailRef.current) {
+        syncAiReadingContext(lastRelocateDetailRef.current);
+      }
+    }, [active, syncAiReadingContext]);
+
+    useEffect(
+      () => () => {
+        // A background tab for the same book must not clear the foreground
+        // tab's live reading context when it unmounts.
+        if (activeRef.current) {
+          readingContextService.clearContext(bookKey);
+        }
+      },
+      [bookKey],
+    );
 
     // Track app theme for reader styling
     const [appTheme, setAppTheme] = useState<AppTheme>(() => getAppTheme());
@@ -1472,86 +1604,7 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
           viewRef.current?.clearSearch();
         },
         getView: () => viewRef.current,
-        getVisibleText: () => {
-          try {
-            const renderer = viewRef.current?.renderer;
-            const contents = renderer?.getContents?.();
-            if (!contents?.[0]?.doc) return "";
-            const doc = contents[0].doc as Document;
-
-            // In paginated mode (CSS columns), the iframe is expanded to the
-            // full content width. The outer container scrolls to show the
-            // current "page". We must use the paginator's scroll position to
-            // determine which text nodes are actually visible.
-            const isPaginated = !renderer.scrolled;
-            const pSize = renderer.size; // container visible width (one page)
-            const pStart = renderer.start; // abs(scrollLeft)
-
-            if (isPaginated && pSize > 0) {
-              // In paginated mode, first page starts at scroll offset = pSize
-              // (page 0 is padding). So visible range in iframe coords is
-              // [start - size, end - size].
-              const visibleLeft = pStart - pSize;
-              const visibleRight = pStart; // end - size = (start + size) - size = start
-
-              const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
-                acceptNode: acceptTTSNode,
-              });
-
-              const visibleTexts: string[] = [];
-              let textNode = walker.nextNode();
-              while (textNode) {
-                const range = doc.createRange();
-                range.selectNodeContents(textNode);
-                const rect = range.getBoundingClientRect();
-                if (rect.right > visibleLeft && rect.left < visibleRight && rect.width > 0) {
-                  const text = normalizeTTSSegmentText(textNode.nodeValue);
-                  if (text) visibleTexts.push(text);
-                }
-                textNode = walker.nextNode();
-              }
-              const result = visibleTexts.join(" ").trim();
-              if (result) return result;
-            } else {
-              // Scrolled mode: use iframe viewport dimensions
-              const win = doc.defaultView;
-              if (win) {
-                const vw = win.innerWidth;
-                const vh = win.innerHeight;
-
-                const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
-                  acceptNode: acceptTTSNode,
-                });
-
-                const visibleTexts: string[] = [];
-                let textNode = walker.nextNode();
-                while (textNode) {
-                  const range = doc.createRange();
-                  range.selectNodeContents(textNode);
-                  const rect = range.getBoundingClientRect();
-                  if (
-                    rect.right > 0 &&
-                    rect.left < vw &&
-                    rect.bottom > 0 &&
-                    rect.top < vh &&
-                    rect.width > 0
-                  ) {
-                    const text = normalizeTTSSegmentText(textNode.nodeValue);
-                    if (text) visibleTexts.push(text);
-                  }
-                  textNode = walker.nextNode();
-                }
-                const result = visibleTexts.join(" ").trim();
-                if (result) return result;
-              }
-            }
-
-            // Fallback: return full section text
-            return normalizeTTSSegmentText(doc.body?.innerText);
-          } catch {
-            return "";
-          }
-        },
+        getVisibleText: () => extractVisibleTextFromView(viewRef.current, containerRef.current),
         getVisibleTTSSegments,
         getTTSSegmentContext,
         setTTSHighlight: async (cfi: string | null, color?: string) => {
@@ -1909,95 +1962,10 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
         activeFootnoteKeyRef.current = null;
         setFootnotePreview(null);
         onRelocate?.(detail);
-
-        // Update reading context service
-        if (detail.tocItem?.label && detail.fraction !== undefined) {
-          // Extract visible text from the current page using precise viewport detection
-          let surroundingText = "";
-          try {
-            const renderer = viewRef.current?.renderer;
-            const contents = renderer?.getContents?.();
-            if (contents?.[0]?.doc) {
-              const doc = contents[0].doc as Document;
-              const isPaginated = !renderer.scrolled;
-              const pSize = renderer.size;
-              const pStart = renderer.start;
-
-              if (isPaginated && pSize > 0) {
-                const visibleLeft = pStart - pSize;
-                const visibleRight = pStart;
-                const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
-                  acceptNode: acceptTTSNode,
-                });
-                const visibleTexts: string[] = [];
-                let textNode = walker.nextNode();
-                while (textNode) {
-                  const range = doc.createRange();
-                  range.selectNodeContents(textNode);
-                  const rect = range.getBoundingClientRect();
-                  if (rect.right > visibleLeft && rect.left < visibleRight && rect.width > 0) {
-                    const text = normalizeTTSSegmentText(textNode.nodeValue);
-                    if (text) visibleTexts.push(text);
-                  }
-                  textNode = walker.nextNode();
-                }
-                surroundingText = visibleTexts.join(" ").trim().slice(0, 2000);
-              } else {
-                const win = doc.defaultView;
-                if (win) {
-                  const vw = win.innerWidth;
-                  const vh = win.innerHeight;
-                  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
-                    acceptNode: acceptTTSNode,
-                  });
-                  const visibleTexts: string[] = [];
-                  let textNode = walker.nextNode();
-                  while (textNode) {
-                    const range = doc.createRange();
-                    range.selectNodeContents(textNode);
-                    const rect = range.getBoundingClientRect();
-                    if (
-                      rect.right > 0 &&
-                      rect.left < vw &&
-                      rect.bottom > 0 &&
-                      rect.top < vh &&
-                      rect.width > 0
-                    ) {
-                      const text = normalizeTTSSegmentText(textNode.nodeValue);
-                      if (text) visibleTexts.push(text);
-                    }
-                    textNode = walker.nextNode();
-                  }
-                  surroundingText = visibleTexts.join(" ").trim().slice(0, 2000);
-                }
-              }
-
-              // Fallback: if no visible text detected, use section text
-              if (!surroundingText) {
-                const rawText = doc.body?.textContent || "";
-                surroundingText = normalizeTTSSegmentText(rawText).slice(0, 2000);
-              }
-            }
-          } catch {
-            // Ignore extraction errors
-          }
-
-          readingContextService.updateContext({
-            bookId: bookKey,
-            currentChapter: {
-              index: detail.section?.current ?? 0,
-              title: detail.tocItem.label,
-              href: detail.tocItem.href || "",
-            },
-            currentPosition: {
-              cfi: detail.cfi || "",
-              percentage: detail.fraction * 100,
-            },
-            surroundingText,
-          });
-        }
+        lastRelocateDetailRef.current = detail;
+        if (active) syncAiReadingContext(detail);
       },
-      [onRelocate, bookKey],
+      [active, onRelocate, syncAiReadingContext],
     );
     const relocateHandlerRef = useRef(relocateHandlerImpl);
     relocateHandlerRef.current = relocateHandlerImpl;
@@ -2570,17 +2538,22 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
 
         // Update reading context service with selection
         if (cfi && chapterIndex !== undefined) {
-          readingContextService.updateSelection({
-            text,
-            cfi,
-            chapterIndex,
-            chapterTitle: "", // Will be filled by relocate handler
-          });
+          const context = readingContextService.getContextForBook(bookKey);
+          readingContextService.updateSelection(
+            {
+              text,
+              cfi,
+              chapterIndex,
+              chapterTitle:
+                context?.currentChapter.index === chapterIndex ? context.currentChapter.title : "",
+            },
+            bookKey,
+          );
         }
 
         return { text, cfi, chapterIndex, rects: offsetRects, range };
       },
-      [],
+      [bookKey],
     );
 
     // Bind foliate events (use viewReady state to ensure re-bind after view creation)
@@ -2959,9 +2932,9 @@ function normalizeBrOnlyParagraphs(doc: Document) {
   const body = doc.body;
   if (!body || body.querySelectorAll("p").length > 2) return;
 
-  const containers: Element[] = Array.from(body.querySelectorAll("div, section, article, main")).filter(
-    shouldNormalizeBrParagraphContainer,
-  );
+  const containers: Element[] = Array.from(
+    body.querySelectorAll("div, section, article, main"),
+  ).filter(shouldNormalizeBrParagraphContainer);
   if (shouldNormalizeBrParagraphContainer(body)) containers.push(body);
 
   for (const container of containers) {

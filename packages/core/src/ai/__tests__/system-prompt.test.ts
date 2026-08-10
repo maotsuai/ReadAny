@@ -77,6 +77,24 @@ describe("buildSystemPrompt citations", () => {
     expect(prompt).toContain("Prefer the selected text and surrounding context");
   });
 
+  it("includes the semantic current position instead of dropping it", () => {
+    const prompt = buildSystemPrompt({
+      book: makeBook(),
+      semanticContext: {
+        currentChapter: "Chapter 3",
+        currentPosition: "page 12 · 34.5% · epubcfi(/6/8)",
+        surroundingText: "visible text",
+        recentHighlights: [],
+        operationType: "reading",
+      },
+      enabledSkills: [],
+      isVectorized: true,
+      userLanguage: "en",
+    });
+
+    expect(prompt).toContain("Current Position: page 12 · 34.5% · epubcfi(/6/8)");
+  });
+
   it("lists the actually allowed tools for the current turn when provided", () => {
     const prompt = buildSystemPrompt({
       book: makeBook(),

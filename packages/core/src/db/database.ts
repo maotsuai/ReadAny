@@ -101,10 +101,14 @@ export {
 
 export {
   getChunks,
+  getChunksWithoutEmbeddings,
+  getChapterChunks,
+  getChunkOutlines,
   insertChunks,
   deleteChunks,
   clearVectorizationFlagsWithoutLocalChunks,
 } from "./chunk-queries";
+export type { ChunkOutline } from "./chunk-queries";
 
 export {
   getSkills,

@@ -1,7 +1,8 @@
 /**
  * Annotation Tools — getAnnotations, addCitation
  */
-import { getChunks, getHighlights, getNotes } from "../../db/database";
+import { getChapterChunks, getHighlights, getNotes } from "../../db/database";
+import { compareCfiPosition } from "../../reader/annotation-order";
 import { resolveFallbackCitationSource } from "../fallback-source-resolver";
 import type { ToolDefinition } from "./tool-types";
 
@@ -17,31 +18,55 @@ export function createGetAnnotationsTool(bookId: string): ToolDefinition {
         description: "'highlights' for highlights only, 'notes' for notes only, 'all' for both",
       },
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
+      context?.signal?.throwIfAborted();
       const type = (args.type as string) || "all";
 
       const result: {
-        highlights?: Array<{ text: string; note?: string; chapterTitle?: string; color: string }>;
-        notes?: Array<{ title: string; content: string; chapterTitle?: string }>;
+        highlights?: Array<{
+          text: string;
+          note?: string;
+          chapterTitle?: string;
+          color: string;
+          cfi: string;
+          createdAt: number;
+        }>;
+        notes?: Array<{
+          title: string;
+          content: string;
+          chapterTitle?: string;
+          cfi?: string;
+          createdAt: number;
+        }>;
       } = {};
 
       if (type === "highlights" || type === "all") {
         const highlights = await getHighlights(bookId);
-        result.highlights = highlights.slice(0, 20).map((h) => ({
-          text: h.text,
-          note: h.note,
-          chapterTitle: h.chapterTitle,
-          color: h.color,
-        }));
+        result.highlights = [...highlights]
+          .sort((a, b) => b.createdAt - a.createdAt)
+          .slice(0, 20)
+          .map((h) => ({
+            text: h.text,
+            note: h.note,
+            chapterTitle: h.chapterTitle,
+            color: h.color,
+            cfi: h.cfi,
+            createdAt: h.createdAt,
+          }));
       }
 
       if (type === "notes" || type === "all") {
         const notes = await getNotes(bookId);
-        result.notes = notes.slice(0, 20).map((n) => ({
-          title: n.title,
-          content: n.content,
-          chapterTitle: n.chapterTitle,
-        }));
+        result.notes = [...notes]
+          .sort((a, b) => b.createdAt - a.createdAt)
+          .slice(0, 20)
+          .map((n) => ({
+            title: n.title,
+            content: n.content,
+            chapterTitle: n.chapterTitle,
+            cfi: n.cfi,
+            createdAt: n.createdAt,
+          }));
       }
 
       return result;
@@ -91,23 +116,35 @@ export function createAddCitationTool(bookId: string): ToolDefinition {
         required: true,
       },
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
+      context?.signal?.throwIfAborted();
       const citationIndex = args.citationIndex as number;
       const chapterTitle = args.chapterTitle as string;
       const chapterIndex = args.chapterIndex as number;
       const aiCfi = (args.cfi as string) || "";
-      const quotedText = (args.quotedText as string).slice(0, 200);
+      const maxCfi = String(args._maxCfi || "").trim();
+      const quotedText = String(args.quotedText || "")
+        .trim()
+        .slice(0, 200);
+      if (!Number.isInteger(citationIndex) || citationIndex < 1) {
+        return { error: "citationIndex must be a positive integer" };
+      }
+      if (!Number.isInteger(chapterIndex) || chapterIndex < 0) {
+        return { error: "chapterIndex must be a non-negative integer" };
+      }
+      if (!quotedText) {
+        return { error: "quotedText is required and must match the source text" };
+      }
 
       // Refine CFI: the AI only gets chunk-level startCfi, which may point to the
       // beginning of a chunk while the quoted text is in the middle/end.
       // Use segmentCfis (per-paragraph CFIs) for precise navigation when available,
       // falling back to startCfi/endCfi heuristic for older data.
-      let refinedCfi = aiCfi;
+      let refinedCfi = "";
       let hasIndexedChapterChunks = false;
-      let chunkLookupFailed = false;
       try {
-        const chunks = await getChunks(bookId);
-        const chapterChunks = chunks.filter((c) => c.chapterIndex === chapterIndex);
+        const chapterChunks = await getChapterChunks(bookId, chapterIndex);
+        context?.signal?.throwIfAborted();
         hasIndexedChapterChunks = chapterChunks.length > 0;
 
         // Find the chunk that contains the quoted text
@@ -115,7 +152,16 @@ export function createAddCitationTool(bookId: string): ToolDefinition {
         let bestChunk = null;
         let bestPos = -1;
         for (const chunk of chapterChunks) {
-          const normalizedContent = chunk.content.replace(/\s+/g, "");
+          const allowedContent = maxCfi
+            ? chunk.content
+                .split("\n\n")
+                .filter((_, index) => {
+                  const cfi = chunk.segmentCfis?.[index];
+                  return Boolean(cfi) && compareCfiPosition(cfi, maxCfi) < 0;
+                })
+                .join("\n\n")
+            : chunk.content;
+          const normalizedContent = allowedContent.replace(/\s+/g, "");
           const pos = normalizedContent.indexOf(normalizedQuote);
           if (pos !== -1) {
             bestChunk = chunk;
@@ -128,7 +174,16 @@ export function createAddCitationTool(bookId: string): ToolDefinition {
         if (!bestChunk && normalizedQuote.length > 30) {
           const partialQuote = normalizedQuote.slice(0, 30);
           for (const chunk of chapterChunks) {
-            const normalizedContent = chunk.content.replace(/\s+/g, "");
+            const allowedContent = maxCfi
+              ? chunk.content
+                  .split("\n\n")
+                  .filter((_, index) => {
+                    const cfi = chunk.segmentCfis?.[index];
+                    return Boolean(cfi) && compareCfiPosition(cfi, maxCfi) < 0;
+                  })
+                  .join("\n\n")
+              : chunk.content;
+            const normalizedContent = allowedContent.replace(/\s+/g, "");
             const pos = normalizedContent.indexOf(partialQuote);
             if (pos !== -1) {
               bestChunk = chunk;
@@ -147,6 +202,9 @@ export function createAddCitationTool(bookId: string): ToolDefinition {
             let found = false;
             for (let i = 0; i < segments.length; i++) {
               const segLen = segments[i].replace(/\s+/g, "").length;
+              if (maxCfi && compareCfiPosition(bestChunk.segmentCfis[i] || "", maxCfi) >= 0) {
+                continue;
+              }
               if (charsBefore + segLen > bestPos && i < bestChunk.segmentCfis.length) {
                 refinedCfi = bestChunk.segmentCfis[i];
                 found = true;
@@ -155,7 +213,7 @@ export function createAddCitationTool(bookId: string): ToolDefinition {
               charsBefore += segLen;
             }
             if (!found) {
-              refinedCfi = bestChunk.startCfi || aiCfi;
+              refinedCfi = bestChunk.startCfi || "";
             }
           } else {
             // No segmentCfis (old data): use startCfi/endCfi heuristic
@@ -164,17 +222,28 @@ export function createAddCitationTool(bookId: string): ToolDefinition {
             if (bestPos > contentLen / 2 && bestChunk.endCfi) {
               refinedCfi = bestChunk.endCfi;
             } else {
-              refinedCfi = bestChunk.startCfi || aiCfi;
+              refinedCfi = bestChunk.startCfi || "";
             }
           }
+        } else if (hasIndexedChapterChunks) {
+          return {
+            error: "The quoted text could not be verified in the indexed chapter",
+            chapterTitle,
+            chapterIndex,
+            quotedText,
+          };
         }
       } catch (e) {
-        // If refinement fails, fall back to AI-provided CFI
-        chunkLookupFailed = true;
-        console.warn("[addCitation] CFI refinement failed, using AI-provided CFI:", e);
+        console.warn("[addCitation] Citation verification failed:", e);
+        return {
+          error: e instanceof Error ? e.message : "Citation verification failed",
+          chapterTitle,
+          chapterIndex,
+          quotedText,
+        };
       }
 
-      if (!hasIndexedChapterChunks && !chunkLookupFailed) {
+      if (!hasIndexedChapterChunks) {
         try {
           const fallbackSource = await resolveFallbackCitationSource({
             bookId,
@@ -205,6 +274,24 @@ export function createAddCitationTool(bookId: string): ToolDefinition {
             quotedText,
           };
         }
+      }
+
+      if (!refinedCfi.trim()) {
+        return {
+          error: "The citation text was found, but no precise CFI is available",
+          chapterTitle,
+          chapterIndex,
+          quotedText,
+        };
+      }
+      if (maxCfi && compareCfiPosition(refinedCfi, maxCfi) >= 0) {
+        return {
+          error: "The citation is at or beyond the protected reading position",
+          spoilerProtected: true,
+          chapterTitle,
+          chapterIndex,
+          quotedText,
+        };
       }
 
       // Return citation metadata

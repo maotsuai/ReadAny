@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { maybeCompressThreadMemory } from "../ai/chat-memory";
+import { getSemanticReadingContext, readingContextService } from "../ai/reading-context-service";
 import { getBuiltinSkills } from "../ai/skills/builtin-skills";
 import { StreamingChat, createMessageId } from "../ai/streaming";
 import {
@@ -10,6 +11,7 @@ import {
 import { getAvailableTools } from "../ai/tools";
 import { getBook, getSkills as getDbSkills } from "../db/database";
 import i18n from "../i18n";
+import { useChatReaderStore } from "../stores/chat-reader-store";
 import { getChatStreamingKey, useChatStore } from "../stores/chat-store";
 import { useSettingsStore } from "../stores/settings-store";
 import type {
@@ -40,7 +42,7 @@ import type { MindmapPart } from "../types/message";
 function buildPartsOrder(parts: Part[]) {
   return parts.map((p) => {
     const base = {
-      type: p.type as "text" | "reasoning" | "tool_call" | "citation" | "mindmap",
+      type: p.type as "text" | "quote" | "reasoning" | "tool_call" | "citation" | "mindmap",
       id: p.id,
     };
     if (p.type === "text") {
@@ -62,6 +64,18 @@ function buildPartsOrder(parts: Part[]) {
         cfi: (p as CitationPart).cfi,
         text: (p as CitationPart).text,
         citationIndex: (p as CitationPart).citationIndex,
+      };
+    }
+    if (p.type === "quote") {
+      const quote = p as ReturnType<typeof createQuotePart>;
+      return {
+        ...base,
+        text: quote.text,
+        source: quote.source,
+        bookId: quote.bookId,
+        chapterTitle: quote.chapterTitle,
+        chapterIndex: quote.chapterIndex,
+        cfi: quote.cfi,
       };
     }
     return base;
@@ -205,16 +219,52 @@ export function useStreamingChat(options?: StreamingChatOptions) {
       let clearPendingPublish: (() => void) | null = null;
 
       try {
+        const previousGeneralThreadId = bookId
+          ? null
+          : useChatStore.getState().generalActiveThreadId;
         const thread = await getOrCreateThread(bookId);
+        if (!bookId) {
+          const readerState = useChatReaderStore.getState();
+          if (previousGeneralThreadId === thread.id) {
+            await readerState.setActiveThreadContext(thread.id);
+          } else {
+            readerState.bindSelectedBooksToThread(thread.id);
+          }
+        }
         initialMessage.threadId = thread.id;
 
         if (thread.messages.length === 0 && !thread.title) {
           await updateThreadTitle(thread.id, content.slice(0, 50));
         }
 
+        const liveContext = bookId ? readingContextService.getContextForBook(bookId) : null;
+        const enrichedQuotes = (quotes ?? []).map((quote) => ({
+          ...quote,
+          bookId: quote.bookId || bookId,
+          chapterTitle: quote.chapterTitle || quote.source || liveContext?.currentChapter.title,
+          chapterIndex:
+            quote.chapterIndex ??
+            liveContext?.selection?.chapterIndex ??
+            liveContext?.currentChapter.logicalIndex ??
+            liveContext?.currentChapter.index,
+          cfi: quote.cfi || liveContext?.selection?.cfi || liveContext?.currentPosition.cfi,
+        }));
+
         let aiPrompt = content.trim();
-        if (quotes && quotes.length > 0) {
-          const quotesText = quotes.map((q) => `> ${q.text.slice(0, 300)}`).join("\n\n");
+        if (enrichedQuotes.length > 0) {
+          const quotesText = enrichedQuotes
+            .map((q) => {
+              const source = [
+                q.bookId ? `bookId=${q.bookId}` : "",
+                q.chapterTitle ? `chapter=${q.chapterTitle}` : "",
+                Number.isInteger(q.chapterIndex) ? `chapterIndex=${q.chapterIndex}` : "",
+                q.cfi ? `cfi=${q.cfi}` : "",
+              ]
+                .filter(Boolean)
+                .join(", ");
+              return `${source ? `[Source: ${source}]\n` : ""}> ${q.text.slice(0, 1200)}`;
+            })
+            .join("\n\n");
           aiPrompt = content.trim()
             ? `关于以下文本：\n${quotesText}\n\n${content.trim()}`
             : `关于以下文本：\n${quotesText}\n\n请帮我分析这段文本。`;
@@ -222,9 +272,16 @@ export function useStreamingChat(options?: StreamingChatOptions) {
 
         const userMessageId = createMessageId();
         const userParts: Part[] = [];
-        if (quotes && quotes.length > 0) {
-          for (const q of quotes) {
-            userParts.push(createQuotePart(q.text, q.source));
+        if (enrichedQuotes.length > 0) {
+          for (const q of enrichedQuotes) {
+            userParts.push(
+              createQuotePart(q.text, q.source, {
+                bookId: q.bookId,
+                chapterTitle: q.chapterTitle,
+                chapterIndex: q.chapterIndex,
+                cfi: q.cfi,
+              }),
+            );
           }
         }
         if (content.trim()) {
@@ -237,12 +294,7 @@ export function useStreamingChat(options?: StreamingChatOptions) {
           role: "user" as const,
           content: aiPrompt,
           parts: userParts,
-          partsOrder: userParts.map((p) => ({
-            type: p.type as "text" | "quote",
-            id: p.id,
-            ...(p.type === "text" ? { text: (p as TextPart).text } : {}),
-            ...(p.type === "quote" ? { text: (p as any).text, source: (p as any).source } : {}),
-          })),
+          partsOrder: buildPartsOrder(userParts),
           createdAt: Date.now(),
         };
 
@@ -349,12 +401,22 @@ export function useStreamingChat(options?: StreamingChatOptions) {
 
         const streamBook = await resolveFreshBook(bookId, options?.book);
         const streamIsVectorized = streamBook?.isVectorized ?? false;
+        const selectedBookIds = bookId ? [] : [...useChatReaderStore.getState().selectedBooks];
+        if (bookId) {
+          await Promise.all([
+            readingContextService.refreshSurroundingText(bookId),
+            readingContextService.refreshRecentHighlights(bookId),
+          ]);
+        }
+        const streamSemanticContext =
+          options?.semanticContext ?? (bookId ? getSemanticReadingContext(bookId) : null);
 
         await stream.stream({
           thread: threadForStream,
           book: streamBook,
           bookId,
-          semanticContext: options?.semanticContext || null,
+          selectedBookIds,
+          semanticContext: streamSemanticContext,
           enabledSkills,
           isVectorized: streamIsVectorized,
           aiConfig: aiConfigOverride || aiConfig,

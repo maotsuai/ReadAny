@@ -14,6 +14,7 @@ export interface StreamingOptions {
   thread: Thread;
   book: Book | null;
   bookId?: string | null;
+  selectedBookIds?: string[];
   semanticContext: SemanticContext | null;
   enabledSkills: Skill[];
   isVectorized: boolean;
@@ -23,8 +24,10 @@ export interface StreamingOptions {
   /** Injected tool provider */
   getAvailableTools: (options: {
     bookId: string | null;
+    selectedBookIds?: string[];
     isVectorized: boolean;
     enabledSkills: Skill[];
+    spoilerFree?: boolean;
   }) => ToolDefinition[];
   onToken: (token: string) => void;
   onComplete: (
@@ -105,6 +108,7 @@ export class StreamingChat {
           aiConfig: options.aiConfig,
           book: options.book,
           bookId: options.book?.id || options.bookId || options.thread.bookId || null,
+          selectedBookIds: options.selectedBookIds,
           semanticContext: options.semanticContext,
           enabledSkills: options.enabledSkills,
           isVectorized: options.isVectorized,
@@ -125,14 +129,23 @@ export class StreamingChat {
         if (signal.aborted) {
           return { done: true, value: undefined };
         }
-        const abortPromise = new Promise<IteratorResult<unknown>>((resolve) => {
+        return new Promise<IteratorResult<unknown>>((resolve, reject) => {
           const onAbort = () => {
             signal.removeEventListener("abort", onAbort);
             resolve({ done: true, value: undefined });
           };
           signal.addEventListener("abort", onAbort);
+          iterator.next().then(
+            (result) => {
+              signal.removeEventListener("abort", onAbort);
+              resolve(result);
+            },
+            (error) => {
+              signal.removeEventListener("abort", onAbort);
+              reject(error);
+            },
+          );
         });
-        return Promise.race([iterator.next(), abortPromise]);
       };
 
       const iterator = stream[Symbol.asyncIterator]();

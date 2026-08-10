@@ -1,10 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---- Mocks ----
+const dbMocks = vi.hoisted(() => ({
+  getChunks: vi.fn(),
+}));
+
 vi.mock("../../db/database", () => ({
   getBooks: vi.fn(),
   getBook: vi.fn(),
-  getChunks: vi.fn(),
+  getChunks: dbMocks.getChunks,
+  getChunksWithoutEmbeddings: (bookId: string) => dbMocks.getChunks(bookId),
+  getChunkOutlines: async (bookId: string) =>
+    ((await dbMocks.getChunks(bookId)) || []).map((chunk: any) => ({
+      id: chunk.id,
+      bookId: chunk.bookId,
+      chapterIndex: chunk.chapterIndex,
+      chapterTitle: chunk.chapterTitle,
+      preview: chunk.content?.slice(0, 500) || "",
+      startCfi: chunk.startCfi || "",
+      endCfi: chunk.endCfi || "",
+    })),
+  getChapterChunks: async (bookId: string, chapterIndex: number) =>
+    ((await dbMocks.getChunks(bookId)) || []).filter(
+      (chunk: { chapterIndex: number }) => chunk.chapterIndex === chapterIndex,
+    ),
   getHighlights: vi.fn(),
   getNotes: vi.fn(),
   getAllHighlights: vi.fn(),
@@ -136,6 +155,105 @@ describe("getAvailableTools", () => {
     // Should NOT have book-specific tools
     expect(names).not.toContain("ragSearch");
     expect(names).not.toContain("getAnnotations");
+  });
+
+  it("registers scoped content tools for books selected in standalone chat", () => {
+    const tools = getAvailableTools({
+      bookId: null,
+      selectedBookIds: ["book-1", "book-2", "book-1"],
+      isVectorized: false,
+      enabledSkills: [],
+    });
+    const names = tools.map((tool) => tool.name);
+    expect(names).toContain("searchSelectedBooks");
+    expect(names).toContain("addCitation");
+    expect(names).not.toContain("ragSearch");
+  });
+
+  it("searches only explicitly selected books and keeps book attribution", async () => {
+    vi.mocked(getBook).mockImplementation(
+      async (bookId) =>
+        makeBook({ id: bookId, meta: { title: `Title ${bookId}`, author: "Author" } }) as any,
+    );
+    vi.mocked(search).mockImplementation(
+      async ({ bookId }) =>
+        [
+          {
+            chunk: makeChunk({
+              id: `${bookId}-0-0`,
+              bookId,
+              content: `Result from ${bookId}`,
+            }),
+            score: bookId === "book-2" ? 0.9 : 0.8,
+            matchType: "vector",
+            highlights: [`Result from ${bookId}`],
+          },
+        ] as any,
+    );
+
+    const tools = getAvailableTools({
+      bookId: null,
+      selectedBookIds: ["book-1", "book-2", "book-1"],
+      isVectorized: false,
+      enabledSkills: [],
+    });
+    const result = (await findTool(tools, "searchSelectedBooks").execute({
+      query: "result",
+      topK: 4,
+    })) as any;
+
+    expect(
+      vi
+        .mocked(search)
+        .mock.calls.map(([query]) => query.bookId)
+        .sort(),
+    ).toEqual(["book-1", "book-2"]);
+    expect(result.results.map((item: any) => item.bookId)).toEqual(["book-2", "book-1"]);
+    expect(result.results[0].bookTitle).toBe("Title book-2");
+  });
+
+  it("does not silently drop selected books beyond the former twelve-book cap", async () => {
+    const selectedBookIds = Array.from({ length: 13 }, (_, index) => `book-${index + 1}`);
+    vi.mocked(getBook).mockImplementation(
+      async (bookId) =>
+        makeBook({ id: bookId, meta: { title: String(bookId), author: "Author" } }) as any,
+    );
+    vi.mocked(search).mockResolvedValue([]);
+
+    const tools = getAvailableTools({
+      bookId: null,
+      selectedBookIds,
+      isVectorized: false,
+      enabledSkills: [],
+    });
+    const result = (await findTool(tools, "searchSelectedBooks").execute({
+      query: "shared theme",
+      topK: 3,
+    })) as any;
+
+    expect(result.attemptedBooks).toBe(13);
+    expect(result.searchedBooks).toBe(13);
+    expect(vi.mocked(search)).toHaveBeenCalledTimes(13);
+  });
+
+  it("rejects selected-book citations for a book outside the selected scope", async () => {
+    const tools = getAvailableTools({
+      bookId: null,
+      selectedBookIds: ["book-1"],
+      isVectorized: false,
+      enabledSkills: [],
+    });
+    const result = (await findTool(tools, "addCitation").execute({
+      bookId: "book-2",
+      citationIndex: 1,
+      chapterTitle: "Chapter 1",
+      chapterIndex: 0,
+      cfi: "epubcfi(/6/2)",
+      quotedText: "text",
+      reasoning: "test",
+    })) as any;
+
+    expect(result.error).toContain("selected");
   });
 
   it("should register fallback exploration tools for non-vectorized books", () => {
@@ -329,8 +447,8 @@ describe("ragToc tool", () => {
     setFallbackContentProvider({
       async getChapters() {
         return [
-          { index: 0, title: "第1章 整洁代码", content: "chapter one" },
-          { index: 1, title: "第2章 有意义的命名", content: "chapter two" },
+          { index: 1, title: "第1章 整洁代码", content: "chapter one" },
+          { index: 2, title: "第2章 有意义的命名", content: "chapter two" },
         ];
       },
     });
@@ -339,7 +457,7 @@ describe("ragToc tool", () => {
     const tool = findTool(tools, "ragToc");
     const result = (await tool.execute({})) as any;
 
-    expect(result.source).toBe("original-file");
+    expect(result.source).toBe("vector-index+original-titles");
     expect(result.returned).toBe(2);
     expect(result.debug).toMatchObject({
       vectorChapterCount: 2,
@@ -352,8 +470,8 @@ describe("ragToc tool", () => {
       },
     });
     expect(result.chapters).toEqual([
-      { index: 0, number: 1, title: "第1章 整洁代码" },
-      { index: 1, number: 2, title: "第2章 有意义的命名" },
+      { index: 1, number: 1, title: "第1章 整洁代码" },
+      { index: 2, number: 2, title: "第2章 有意义的命名" },
     ]);
   });
 
@@ -422,6 +540,35 @@ describe("resolveChapterReference tool", () => {
 // ============================================
 describe("ragSearch tool", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("removes the unread tail of a chunk at a spoiler boundary", async () => {
+    vi.mocked(search).mockResolvedValue([
+      {
+        chunk: makeChunk({
+          chapterIndex: 2,
+          content: "already read\n\nunread reveal",
+          startCfi: "epubcfi(/6/2!/4/2)",
+          endCfi: "epubcfi(/6/2!/4/10)",
+          segmentCfis: ["epubcfi(/6/2!/4/2)", "epubcfi(/6/2!/4/8)"],
+        }),
+        score: 0.9,
+        matchType: "vector",
+      },
+    ] as any);
+
+    const tool = findTool(
+      getAvailableTools({ bookId: "book-1", isVectorized: true, enabledSkills: [] }),
+      "ragSearch",
+    );
+    const result = (await tool.execute({
+      query: "reveal",
+      _maxChapterIndex: 2,
+      _maxCfi: "epubcfi(/6/2!/4/6)",
+    })) as any;
+
+    expect(result.results[0].content).toBe("already read");
+    expect(result.results[0].content).not.toContain("unread reveal");
+  });
 
   it("should truncate results within token budget", async () => {
     // Each result has ~100 chars → ~25 tokens. Budget is 4000 tokens.
@@ -503,6 +650,57 @@ describe("ragContext tool", () => {
 
     expect(result.totalTokens).toBeLessThanOrEqual(3000);
     expect(result.tokenBudget).toBe(3000);
+  });
+
+  it("centers chapter context around the requested CFI", async () => {
+    vi.mocked(getChunks).mockResolvedValue(
+      ["A", "B", "C", "D", "E"].map((content, index) =>
+        makeChunk({
+          id: `book-1-0-${index}`,
+          chapterIndex: 0,
+          content,
+          startCfi: `epubcfi(/6/2!/4/${index * 2 + 2})`,
+          endCfi: `epubcfi(/6/2!/4/${index * 2 + 3})`,
+        }),
+      ) as any,
+    );
+
+    const tools = getAvailableTools({ bookId: "book-1", isVectorized: true, enabledSkills: [] });
+    const tool = findTool(tools, "ragContext");
+    const result = (await tool.execute({
+      chapterIndex: 0,
+      cfi: "epubcfi(/6/2!/4/7)",
+      range: 1,
+    })) as any;
+
+    expect(result.context).toContain("B");
+    expect(result.context).toContain("C");
+    expect(result.context).toContain("D");
+    expect(result.context).not.toContain("A");
+    expect(result.context).not.toContain("E");
+    expect(result.anchor.chunkIndex).toBe(2);
+  });
+
+  it("withholds an unverifiable current chunk at a spoiler CFI boundary", async () => {
+    vi.mocked(getChunks).mockResolvedValue([
+      makeChunk({
+        chapterIndex: 0,
+        content: "The chunk may extend beyond the current position.",
+        startCfi: "epubcfi(/6/2!/4/2)",
+        endCfi: "",
+        segmentCfis: [],
+      }),
+    ] as any);
+
+    const tools = getAvailableTools({ bookId: "book-1", isVectorized: true, enabledSkills: [] });
+    const tool = findTool(tools, "ragContext");
+    const result = (await tool.execute({
+      chapterIndex: 0,
+      _maxCfi: "epubcfi(/6/2!/4/4)",
+    })) as any;
+
+    expect(result.spoilerProtected).toBe(true);
+    expect(result.context).toBeUndefined();
   });
 });
 
@@ -780,6 +978,40 @@ describe("fallback content tools", () => {
     expect(result.results[0].cfiPrecision).toBe("segment");
   });
 
+  it("extracts useful terms from a natural-language Chinese query", async () => {
+    registerFallbackChapters([
+      {
+        index: 0,
+        title: "离乡",
+        content: "主角在暴雨中决定离开家乡。",
+        segments: [{ text: "主角在暴雨中决定离开家乡。", cfi: "epubcfi(/6/2!/4/2)" }],
+      },
+    ]);
+
+    const tools = getAvailableTools({ bookId: "book-1", isVectorized: false, enabledSkills: [] });
+    const result = (await findTool(tools, "fallbackSearch").execute({
+      query: "主角为什么离开",
+      topK: 1,
+    })) as any;
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0].content).toContain("主角");
+  });
+
+  it("does not fall back to whole-chapter text when spoiler filtering removes every segment", async () => {
+    registerFallbackChapters();
+
+    const tools = getAvailableTools({ bookId: "book-1", isVectorized: false, enabledSkills: [] });
+    const tool = findTool(tools, "fallbackChapterContext");
+    const result = (await tool.execute({
+      chapterIndex: 0,
+      _maxCfi: "epubcfi(/6/2!/4/1)",
+    })) as any;
+
+    expect(result.spoilerProtected).toBe(true);
+    expect(result.content).toBeUndefined();
+  });
+
   it("registers fallback citations only when quoted text resolves to a segment CFI", async () => {
     registerFallbackChapters();
     vi.mocked(getChunks).mockResolvedValue([]);
@@ -903,7 +1135,7 @@ describe("addCitation tool", () => {
     expect(result.cfi).toBeDefined();
   });
 
-  it("should fallback to AI-provided CFI when refinement fails", async () => {
+  it("should reject a citation when source verification fails", async () => {
     vi.mocked(getChunks).mockRejectedValue(new Error("DB error"));
 
     const tools = getAvailableTools({ bookId: "book-1", isVectorized: true, enabledSkills: [] });
@@ -917,7 +1149,54 @@ describe("addCitation tool", () => {
       reasoning: "test",
     })) as any;
 
-    expect(result.cfi).toBe("/4/2/original");
+    expect(result.error).toContain("DB error");
+    expect(result.type).toBeUndefined();
+  });
+
+  it("should reject quoted text that is absent from the indexed chapter", async () => {
+    vi.mocked(getChunks).mockResolvedValue([
+      makeChunk({ chapterIndex: 0, content: "Only verified source text is here." }),
+    ] as any);
+
+    const tools = getAvailableTools({ bookId: "book-1", isVectorized: true, enabledSkills: [] });
+    const tool = findTool(tools, "addCitation");
+    const result = (await tool.execute({
+      citationIndex: 1,
+      chapterTitle: "Chapter 1",
+      chapterIndex: 0,
+      cfi: "/4/2",
+      quotedText: "invented source text",
+      reasoning: "test",
+    })) as any;
+
+    expect(result.error).toContain("could not be verified");
+    expect(result.type).toBeUndefined();
+  });
+
+  it("should reject a model-provided CFI when the verified chunk has no known CFI", async () => {
+    vi.mocked(getChunks).mockResolvedValue([
+      makeChunk({
+        chapterIndex: 0,
+        content: "Verified source text.",
+        startCfi: "",
+        endCfi: "",
+        segmentCfis: [],
+      }),
+    ] as any);
+
+    const tools = getAvailableTools({ bookId: "book-1", isVectorized: true, enabledSkills: [] });
+    const tool = findTool(tools, "addCitation");
+    const result = (await tool.execute({
+      citationIndex: 1,
+      chapterTitle: "Chapter 1",
+      chapterIndex: 0,
+      cfi: "epubcfi(/hallucinated)",
+      quotedText: "Verified source text",
+      reasoning: "test",
+    })) as any;
+
+    expect(result.error).toContain("no precise CFI");
+    expect(result.type).toBeUndefined();
   });
 
   it("should use endCfi when quote is in second half (no segmentCfis)", async () => {

@@ -2684,9 +2684,9 @@ a { color: ${primary} !important; }
       try {
         if (!view || !view.renderer) return '';
         var renderer = view.renderer;
-        var contents = renderer.getContents && renderer.getContents();
-        if (!contents || !contents[0] || !contents[0].doc) return '';
-        var doc = contents[0].doc;
+        var primaryContent = getPrimaryRendererContent();
+        if (!primaryContent || !primaryContent.doc) return '';
+        var doc = primaryContent.doc;
         var win = doc.defaultView;
         if (!win) return '';
 
@@ -2697,6 +2697,7 @@ a { color: ${primary} !important; }
         var isPaginated = !renderer.scrolled;
         var pSize = renderer.size;   // container visible width (one page)
         var pStart = renderer.start; // abs(scrollLeft)
+        var visibleRange = isPaginated ? pickPaginatedVisibleRange(doc, renderer) : null;
 
         var walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
           acceptNode: function(node) {
@@ -2711,22 +2712,22 @@ a { color: ${primary} !important; }
         while (textNode && totalLen < maxLen) {
           var range = doc.createRange();
           range.selectNodeContents(textNode);
-          var rect = range.getBoundingClientRect();
+          var rects = Array.from(range.getClientRects()).filter(function (rect) {
+            return rect.width > 0 && rect.height > 0;
+          });
           
           var isVisible = false;
-          if (isPaginated && pSize > 0) {
-            // In paginated mode, first page starts at scroll offset = pSize
-            // So visible range in iframe coords is [start - size, end - size]
-            var visibleLeft = pStart - pSize;
-            var visibleRight = pStart;
-            isVisible = rect.right > visibleLeft && rect.left < visibleRight && rect.width > 0;
+          if (isPaginated && visibleRange) {
+            isVisible = rects.some(function (rect) {
+              return rectIntersectsPaginatedRange(rect, visibleRange);
+            });
           } else {
             // Scrolled mode: use iframe viewport dimensions
             var vw = win.innerWidth;
             var vh = win.innerHeight;
-            isVisible = rect.width > 0 && rect.height > 0 &&
-                rect.right > 0 && rect.left < vw &&
-                rect.bottom > 0 && rect.top < vh;
+            isVisible = rects.some(function (rect) {
+              return rect.right > 0 && rect.left < vw && rect.bottom > 0 && rect.top < vh;
+            });
           }
           
           if (isVisible) {
@@ -2747,11 +2748,11 @@ a { color: ${primary} !important; }
           return { text: '', error: 'no view or renderer' };
         }
         var renderer = view.renderer;
-        var contents = renderer.getContents && renderer.getContents();
-        if (!contents || !contents[0] || !contents[0].doc) {
+        var primaryContent = getPrimaryRendererContent();
+        if (!primaryContent || !primaryContent.doc) {
           return { text: '', error: 'no contents or doc' };
         }
-        var doc = contents[0].doc;
+        var doc = primaryContent.doc;
         var win = doc.defaultView;
         if (!win) {
           return { text: '', error: 'no win' };
@@ -2763,6 +2764,7 @@ a { color: ${primary} !important; }
         var isPaginated = !renderer.scrolled;
         var pSize = renderer.size;   // container visible width (one page)
         var pStart = renderer.start; // abs(scrollLeft)
+        var visibleRange = isPaginated ? pickPaginatedVisibleRange(doc, renderer) : null;
 
         var walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
           acceptNode: function(node) {
@@ -2781,28 +2783,28 @@ a { color: ${primary} !important; }
           nodeCount++;
           var range = doc.createRange();
           range.selectNodeContents(textNode);
-          var rect = range.getBoundingClientRect();
+          var rects = Array.from(range.getClientRects()).filter(function (rect) {
+            return rect.width > 0 && rect.height > 0;
+          });
+          var rect = rects[0] || range.getBoundingClientRect();
           
           if (nodeCount === 1) {
             firstRectInfo = { left: rect.left, right: rect.right, width: rect.width };
           }
           
           var isVisible = false;
-          if (isPaginated && pSize > 0) {
-            // In paginated mode, the iframe is expanded to the full content width.
-            // The outer container scrolls to show the current "page".
-            // First page starts at scroll offset = pSize (page 0 is padding).
-            // So visible range in iframe coords is [start - size, end - size].
-            var visibleLeft = pStart - pSize;
-            var visibleRight = pStart;
-            isVisible = rect.right > visibleLeft && rect.left < visibleRight && rect.width > 0;
+          if (isPaginated && visibleRange) {
+            isVisible = rects.some(function (candidateRect) {
+              return rectIntersectsPaginatedRange(candidateRect, visibleRange);
+            });
           } else {
             // Scrolled mode: use iframe viewport dimensions
             var vw = win.innerWidth;
             var vh = win.innerHeight;
-            isVisible = rect.width > 0 && rect.height > 0 &&
-                rect.right > 0 && rect.left < vw &&
-                rect.bottom > 0 && rect.top < vh;
+            isVisible = rects.some(function (candidateRect) {
+              return candidateRect.right > 0 && candidateRect.left < vw &&
+                candidateRect.bottom > 0 && candidateRect.top < vh;
+            });
           }
           
           if (isVisible) {
@@ -2820,6 +2822,7 @@ a { color: ${primary} !important; }
             isPaginated: isPaginated,
             pSize: pSize,
             pStart: pStart,
+            visibleRange: visibleRange,
             nodeCount: nodeCount,
             visibleCount: visibleCount,
             firstRect: firstRectInfo
@@ -2831,8 +2834,7 @@ a { color: ${primary} !important; }
     }
 
     function getCurrentRendererContent() {
-      const contents = getRendererContents();
-      return contents[0] || null;
+      return getPrimaryRendererContent() || getRendererContents()[0] || null;
     }
 
     function anchorToRange(doc, anchor) {
@@ -2948,18 +2950,18 @@ a { color: ${primary} !important; }
 
     function pickPaginatedVisibleRange(doc, renderer) {
       const candidates = getPaginatedVisibleRangeCandidates(renderer);
-      if (candidates.length <= 1) return candidates[0] || null;
+      if (!candidates.length) return null;
 
-      const legacyRange = candidates.find((range) => range.source === 'legacy-offset') || null;
-      if (legacyRange && scorePaginatedVisibleRange(doc, legacyRange) > 0) return legacyRange;
-
-      const rendererRange = candidates.find((range) => range.source === 'renderer') || null;
-      if (rendererRange && scorePaginatedVisibleRange(doc, rendererRange) > 0) return rendererRange;
-
-      const fallbackRange = candidates.find((range) => range.source === 'size-fallback') || null;
-      if (fallbackRange && scorePaginatedVisibleRange(doc, fallbackRange) > 0) return fallbackRange;
-
-      return legacyRange || rendererRange || fallbackRange || candidates[0] || null;
+      const preference = { renderer: 3, 'legacy-offset': 2, 'size-fallback': 1 };
+      const scored = candidates.map((candidate) => ({
+        range: candidate,
+        score: scorePaginatedVisibleRange(doc, candidate),
+        preference: preference[candidate.source] || 0,
+      }));
+      scored.sort((left, right) => {
+        return right.score - left.score || right.preference - left.preference;
+      });
+      return scored[0].range;
     }
 
     let ttsVisibleRangeByDoc = new WeakMap();
