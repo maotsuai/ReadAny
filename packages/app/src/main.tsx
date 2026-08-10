@@ -8,7 +8,11 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./styles/globals.css";
-import { setEmbeddingWorkerFactory, setStreamingFetch } from "@readany/core/ai";
+import {
+  readingContextService,
+  setEmbeddingWorkerFactory,
+  setStreamingFetch,
+} from "@readany/core/ai";
 import { BUILTIN_EMBEDDING_MODELS } from "@readany/core/ai/builtin-embedding-models";
 import { onLibraryChanged } from "@readany/core/events/library-events";
 import { installFeedbackLogCapture, setFeedbackWorkerUrl } from "@readany/core/feedback";
@@ -26,7 +30,8 @@ import { useVectorModelStore } from "./stores/vector-model-store";
 installFeedbackLogCapture();
 
 const FEEDBACK_WORKER_FALLBACK = "https://feedback.readany.top";
-const feedbackWorkerUrl = import.meta.env.VITE_FEEDBACK_WORKER_URL?.trim() || FEEDBACK_WORKER_FALLBACK;
+const feedbackWorkerUrl =
+  import.meta.env.VITE_FEEDBACK_WORKER_URL?.trim() || FEEDBACK_WORKER_FALLBACK;
 setFeedbackWorkerUrl(feedbackWorkerUrl);
 
 // Register platform service before any database/core operations
@@ -79,8 +84,9 @@ const desktopDataRootReady = syncLegacyDesktopLibraryRootConfig().catch(console.
 })();
 
 // Ensure i18n is fully initialized before rendering
-i18nReady.then(() => {
-  desktopDataRootReady.catch(console.error);
+i18nReady.then(async () => {
+  await desktopDataRootReady;
+  await readingContextService.initialize();
 
   // Restore saved theme from localStorage
   const savedTheme = localStorage.getItem("readany-theme");

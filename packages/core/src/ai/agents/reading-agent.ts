@@ -16,12 +16,17 @@ import { z } from "zod";
 import type { AIConfig, Book, SemanticContext, Skill } from "../../types";
 import { createChatModel } from "../llm-provider";
 import { getReadingContextSnapshot } from "../reading-context-service";
+import {
+  filterSpoilerToolResult,
+  guardSpoilerToolCall,
+  resolveSpoilerBoundary,
+} from "../spoiler-guard";
 import { buildSystemPrompt } from "../system-prompt";
 import { ThinkTagStreamParser } from "../think-tag-parser";
 import type { ToolDefinition, ToolParameter } from "../tools/tool-types";
 
 const CHAPTER_REFERENCE_RE =
-  /(?:第\s*)?[零〇一二两三四五六七八九十百千万\d]{1,8}\s*(?:章|卷|节|回|讲|篇|话)|这一章|这一节|chapter\s*\d+/iu;
+  /(?:第\s*)?[零〇一二两三四五六七八九十百千万\d]{1,8}\s*(?:章|卷|节|回|讲|篇|话)|这一章|这一节|chapter\s*\d+|chapitre\s*\d+|cap[ií]tulo\s*\d+|第\s*\d+\s*章|\d+\s*장/iu;
 const CHAPTER_REFERENCE_EXECUTION_LIMIT = 3;
 const CHAPTER_TOOL_EXECUTION_LIMIT = 8;
 const DEFAULT_RECURSION_LIMIT = 24;
@@ -43,6 +48,7 @@ const CHAPTER_LOOKUP_STOP_TOOL_NAMES = new Set([
   "fallbackSearch",
   "fallbackToc",
   "fallbackChapterContext",
+  "searchSelectedBooks",
   "getCurrentChapter",
   "getSurroundingContext",
 ]);
@@ -50,17 +56,17 @@ const CHAPTER_LOOKUP_STOP_TOOL_NAMES = new Set([
 const GENERAL_CHAT_ONLY_RE =
   /^(?:你好|您好|hi|hello|hey|thanks|thank you|谢谢|感謝|早上好|中午好|晚上好|在吗|在嗎)[！!？?\s]*$/iu;
 const LIBRARY_REQUEST_RE =
-  /(?:书库|書庫|library|分组|分組|标签|標籤|tag|阅读统计|閱讀統計|reading\s*stats|技能|skill|思维导图|思維導圖|mindmap)/iu;
+  /(?:书库|書庫|library|分组|分組|标签|標籤|\btag(?:s|ging)?\b|阅读统计|閱讀統計|reading\s*stats|技能|\bskills?\b|思维导图|思維導圖|\bmindmap\b)/iu;
 const CURRENT_SELECTION_RE =
-  /(?:这段|這段|这句|這句|这部分|這部分|选中|選中|所选|所選|划线|劃線|框选|框選|這一段|这一段|這一句|这一句)/u;
+  /(?:这段|這段|这句|這句|这部分|這部分|选中|選中|所选|所選|划线|劃線|框选|框選|以下文本|下列文本|this\s+(?:passage|paragraph|sentence|selection|text)|selected\s+text|ce\s+(?:passage|paragraphe|texte)|este\s+(?:pasaje|párrafo|texto)|この(?:文章|段落|文)|選択した(?:文章|テキスト)|이\s*(?:구절|문단|문장)|선택한\s*(?:텍스트|문장))/iu;
 const CURRENT_PAGE_CONTEXT_RE =
-  /(?:这里|這裡|当前页|當前頁|这一页|這一頁|这页|這頁|当前位置|當前位置|目前看到|我看到这里|我看到這裡)/u;
+  /(?:这里|這裡|当前页|當前頁|这一页|這一頁|这页|這頁|当前位置|當前位置|目前看到|我看到这里|我看到這裡|this\s+page|current\s+(?:page|position)|where\s+i(?:'m|\s+am)\s+reading|cette\s+page|position\s+actuelle|esta\s+página|posición\s+actual|このページ|現在の(?:ページ|位置)|이\s*페이지|현재\s*(?:페이지|위치))/iu;
 const CURRENT_CHAPTER_CONTEXT_RE =
-  /(?:这一章|這一章|这章|這章|当前章节|當前章節|当前章|當前章|現在這章|现在这章|本章)/u;
+  /(?:这一章|這一章|这章|這章|当前章节|當前章節|当前章|當前章|現在這章|现在这章|本章|this\s+chapter|current\s+chapter|ce\s+chapitre|chapitre\s+actuel|este\s+capítulo|capítulo\s+actual|この章|現在の章|이\s*장|현재\s*장)/iu;
 const IMMEDIATE_CONTEXT_RE =
-  /(?:什么意思|什麼意思|看不懂|沒看懂|没看懂|解释一下|解釋一下|怎么理解|怎麼理解)/u;
+  /(?:什么意思|什麼意思|看不懂|沒看懂|没看懂|解释一下|解釋一下|怎么理解|怎麼理解|what\s+does\s+.+\s+mean|explain\s+(?:this|it)|i\s+don['’]?t\s+understand|qu['’]est-ce\s+que\s+.+\s+veut\s+dire|explique|qué\s+significa|explica|どういう意味|説明して|무슨\s*뜻|설명해)/iu;
 const BOOK_CONTENT_RE =
-  /(?:这本书|這本書|本书|本書|人物|角色|主角|配角|剧情|劇情|情节|情節|主题|主題|关系|關係|第一次|首次|结局|結局|梗概|总结|總結|摘要|分析|搜索|搜尋|查一下|搜一下|讲了什么|講了什麼|讲什么|講什麼)/u;
+  /(?:这本书|這本書|本书|本書|人物|角色|主角|配角|剧情|劇情|情节|情節|主题|主題|关系|關係|第一次|首次|结局|結局|梗概|总结|總結|摘要|分析|搜索|搜尋|查一下|搜一下|讲了什么|講了什麼|讲什么|講什麼|this\s+book|character|plot|theme|summary|summari[sz]e|search|argument|ce\s+livre|personnage|intrigue|thème|résumé|este\s+libro|personaje|trama|tema|resumen|この本|登場人物|あらすじ|テーマ|要約|이\s*책|등장인물|줄거리|주제|요약)/iu;
 
 const GENERAL_TOOL_NAMES = new Set([
   "listBooks",
@@ -125,6 +131,7 @@ const CATEGORY_TOOL_ORDER: Record<ReadingQuestionCategory, string[]> = {
     "addCitation",
   ],
   specific_chapter_request: [
+    "searchSelectedBooks",
     "resolveChapterReference",
     "ragSearch",
     "ragToc",
@@ -139,6 +146,7 @@ const CATEGORY_TOOL_ORDER: Record<ReadingQuestionCategory, string[]> = {
     "addCitation",
   ],
   book_wide_search: [
+    "searchSelectedBooks",
     "ragSearch",
     "resolveChapterReference",
     "ragToc",
@@ -207,21 +215,29 @@ function buildSearchToolCacheKey(
 function detectQuestionCategory(options: {
   userInput: string;
   hasBookContext: boolean;
+  hasActiveReaderContext: boolean;
+  hasSelectedBooksContext: boolean;
   selectionActive: boolean;
 }): ReadingQuestionCategory {
   const text = options.userInput.normalize("NFKC").trim();
   if (!text) return options.hasBookContext ? "book_wide_search" : "general_chat";
   if (GENERAL_CHAT_ONLY_RE.test(text)) return "general_chat";
   if (LIBRARY_REQUEST_RE.test(text) || !options.hasBookContext) return "library_request";
+  if (options.hasSelectedBooksContext && !options.hasActiveReaderContext) {
+    return CHAPTER_REFERENCE_RE.test(text) ? "specific_chapter_request" : "book_wide_search";
+  }
   const hasExplicitCurrentSelectionCue = CURRENT_SELECTION_RE.test(text);
   const hasExplicitCurrentPageCue = CURRENT_PAGE_CONTEXT_RE.test(text);
   const hasExplicitCurrentChapterCue = CURRENT_CHAPTER_CONTEXT_RE.test(text);
   const asksForImmediateExplanation = IMMEDIATE_CONTEXT_RE.test(text);
 
-  if (options.selectionActive && hasExplicitCurrentSelectionCue) {
+  if (hasExplicitCurrentSelectionCue || (options.selectionActive && asksForImmediateExplanation)) {
     return "current_selection";
   }
-  if (hasExplicitCurrentPageCue || (asksForImmediateExplanation && hasExplicitCurrentPageCue)) {
+  if (
+    hasExplicitCurrentPageCue ||
+    (options.hasActiveReaderContext && asksForImmediateExplanation)
+  ) {
     return "current_page_context";
   }
   if (CHAPTER_REFERENCE_RE.test(text)) return "specific_chapter_request";
@@ -305,6 +321,7 @@ function getFocusedToolNames(
       return new Set(
         isVectorized
           ? [
+              "searchSelectedBooks",
               "resolveChapterReference",
               "ragSearch",
               "ragToc",
@@ -315,7 +332,13 @@ function getFocusedToolNames(
               "analyzeArguments",
               "addCitation",
             ]
-          : ["resolveChapterReference", "fallbackChapterContext", "fallbackToc", "addCitation"],
+          : [
+              "searchSelectedBooks",
+              "resolveChapterReference",
+              "fallbackChapterContext",
+              "fallbackToc",
+              "addCitation",
+            ],
       );
     case "book_wide_search":
       return null;
@@ -359,6 +382,7 @@ function buildRouteHint(
   category: ReadingQuestionCategory,
   selectionActive: boolean,
   isVectorized: boolean,
+  selectedBooksActive = false,
 ): string | undefined {
   switch (category) {
     case "current_selection":
@@ -374,10 +398,16 @@ function buildRouteHint(
         ? "This question is about the chapter the user is currently reading. Get the current chapter first, then prefer indexed chapter/content retrieval."
         : "This question is about the chapter the user is currently reading. Get the current chapter first, then use fallback chapter content.";
     case "specific_chapter_request":
+      if (selectedBooksActive) {
+        return "This question targets the books selected in standalone chat. Search only those books with searchSelectedBooks and keep every claim tied to its returned bookId.";
+      }
       return isVectorized
         ? "This question targets a specific chapter reference. Resolve the chapter reference first; if resolution is weak or the user asks for content, use ragSearch/ragToc/ragContext instead of guessing."
         : "This question targets a specific chapter reference. Resolve the chapter reference first; if resolution is weak, use fallbackToc/fallbackSearch or ask for clarification.";
     case "book_wide_search":
+      if (selectedBooksActive) {
+        return "The user explicitly selected one or more books for this standalone chat. Use searchSelectedBooks for book-content questions and do not search unselected books.";
+      }
       return isVectorized
         ? "This is a book-content question and the book is indexed. Prefer ragSearch first for retrieval; use current-context tools only when the question is explicitly about the current page."
         : "This is a book-content question and the book is not indexed. Prefer fallbackSearch/fallbackToc for retrieval.";
@@ -523,6 +553,7 @@ export interface ReadingAgentOptions {
   aiConfig: AIConfig;
   book: Book | null;
   bookId?: string | null;
+  selectedBookIds?: string[];
   semanticContext: SemanticContext | null;
   enabledSkills: Skill[];
   isVectorized: boolean;
@@ -532,8 +563,10 @@ export interface ReadingAgentOptions {
   /** Injected tool provider — returns available tools for the agent */
   getAvailableTools: (options: {
     bookId: string | null;
+    selectedBookIds?: string[];
     isVectorized: boolean;
     enabledSkills: Skill[];
+    spoilerFree?: boolean;
   }) => ToolDefinition[];
   /** Abort signal for immediate cancellation */
   signal?: AbortSignal;
@@ -579,30 +612,46 @@ function countToolParameters(tools: ToolDefinition[]): number {
 
 // --- Tool Executor (error-safe wrapper) ---
 
-function withToolTimeout<T>(promise: Promise<T>, timeoutMs: number, toolName: string): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => {
-      reject(new Error(`Tool "${toolName}" timed out after ${Math.round(timeoutMs / 1000)}s`));
-    }, timeoutMs);
-  });
-
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timeoutId) clearTimeout(timeoutId);
-  });
-}
-
 async function executeTool(
   tool: ToolDefinition,
   args: Record<string, unknown>,
   timeoutMs: number,
+  parentSignal?: AbortSignal,
 ): Promise<unknown> {
+  const controller = new AbortController();
+  const timeoutError = new Error(
+    `Tool "${tool.name}" timed out after ${Math.round(timeoutMs / 1000)}s`,
+  );
+  const onParentAbort = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) onParentAbort();
+  else parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+  const timeoutId = setTimeout(() => controller.abort(timeoutError), timeoutMs);
+  let toolAbortHandler: (() => void) | undefined;
+
   try {
-    return await withToolTimeout(Promise.resolve(tool.execute(args)), timeoutMs, tool.name);
+    const aborted = new Promise<never>((_, reject) => {
+      toolAbortHandler = () => {
+        reject(
+          controller.signal.reason instanceof Error
+            ? controller.signal.reason
+            : new Error("Tool execution aborted"),
+        );
+      };
+      if (controller.signal.aborted) toolAbortHandler();
+      else controller.signal.addEventListener("abort", toolAbortHandler, { once: true });
+    });
+    return await Promise.race([
+      Promise.resolve().then(() => tool.execute(args, { signal: controller.signal })),
+      aborted,
+    ]);
   } catch (error) {
     return {
       error: error instanceof Error ? error.message : String(error),
     };
+  } finally {
+    clearTimeout(timeoutId);
+    if (toolAbortHandler) controller.signal.removeEventListener("abort", toolAbortHandler);
+    parentSignal?.removeEventListener("abort", onParentAbort);
   }
 }
 
@@ -674,6 +723,7 @@ export async function* streamReadingAgent(
     aiConfig,
     book,
     bookId,
+    selectedBookIds = [],
     semanticContext,
     enabledSkills,
     isVectorized,
@@ -688,11 +738,27 @@ export async function* streamReadingAgent(
   // Helper to check if aborted
   const isAborted = () => signal?.aborted ?? false;
   const readingContextSnapshot = getReadingContextSnapshot();
-  const selectionActive = !!readingContextSnapshot?.selection?.text?.trim();
   const effectiveBookId = book?.id || bookId || null;
+  const activeReadingContext =
+    effectiveBookId && readingContextSnapshot?.bookId === effectiveBookId
+      ? readingContextSnapshot
+      : null;
+  const selectionActive = !!activeReadingContext?.selection?.text?.trim();
+  const spoilerBoundary =
+    spoilerFree && effectiveBookId
+      ? await resolveSpoilerBoundary({
+          bookId: effectiveBookId,
+          book,
+          context: activeReadingContext,
+          indexed: isVectorized,
+          signal,
+        })
+      : null;
   const questionCategory = detectQuestionCategory({
     userInput,
-    hasBookContext: !!effectiveBookId,
+    hasBookContext: !!effectiveBookId || selectedBookIds.length > 0,
+    hasActiveReaderContext: !!effectiveBookId,
+    hasSelectedBooksContext: !effectiveBookId && selectedBookIds.length > 0,
     selectionActive,
   });
   const chapterReferenceState = {
@@ -730,8 +796,10 @@ export async function* streamReadingAgent(
     const tools = filterToolsForQuestion({
       tools: getAvailableTools({
         bookId: effectiveBookId,
+        selectedBookIds,
         isVectorized,
         enabledSkills,
+        spoilerFree,
       }),
       category: questionCategory,
       isVectorized,
@@ -757,7 +825,12 @@ export async function* streamReadingAgent(
       memorySummary,
       questionCategory,
       selectionActive,
-      routeHint: buildRouteHint(questionCategory, selectionActive, isVectorized),
+      routeHint: buildRouteHint(
+        questionCategory,
+        selectionActive,
+        isVectorized,
+        !effectiveBookId && selectedBookIds.length > 0,
+      ),
       allowedToolNames: tools.map((tool) => tool.name),
     });
 
@@ -792,7 +865,7 @@ export async function* streamReadingAgent(
     if (tools.length === 0) {
       const { SystemMessage } = await import("@langchain/core/messages");
       const allMessages = [new SystemMessage(systemPrompt), ...inputMessages];
-      const stream = await model.stream(allMessages);
+      const stream = await model.stream(allMessages, { signal });
       const thinkTagParser = new ThinkTagStreamParser();
       const emittedGeminiThoughtSummaries = new Set<string>();
       for await (const chunk of stream) {
@@ -858,7 +931,7 @@ export async function* streamReadingAgent(
         description: tool.description,
         schema,
         func: async (input) => {
-          const toolInput = { ...(input as Record<string, unknown>) };
+          let toolInput = { ...(input as Record<string, unknown>) };
           const isChapterLookupTool = CHAPTER_LOOKUP_STOP_TOOL_NAMES.has(tool.name);
 
           if (chapterReferenceState.limitReached && isChapterLookupTool) {
@@ -907,8 +980,14 @@ export async function* streamReadingAgent(
             chapterReferenceState.attemptedQueries.push(effectiveQuery);
           }
 
+          const spoilerGuard = guardSpoilerToolCall(tool.name, toolInput, spoilerBoundary);
+          if ("result" in spoilerGuard) return JSON.stringify(spoilerGuard.result);
+          toolInput = spoilerGuard.args;
+
           const progressKey =
-            tool.name === "ragSearch" || tool.name === "fallbackSearch"
+            tool.name === "ragSearch" ||
+            tool.name === "fallbackSearch" ||
+            tool.name === "searchSelectedBooks"
               ? buildSearchToolCacheKey(tool.name, toolInput) ||
                 buildToolCacheKey(tool.name, toolInput)
               : buildToolCacheKey(tool.name, toolInput);
@@ -938,7 +1017,9 @@ export async function* streamReadingAgent(
           }
 
           const searchCacheKey =
-            tool.name === "ragSearch" || tool.name === "fallbackSearch"
+            tool.name === "ragSearch" ||
+            tool.name === "fallbackSearch" ||
+            tool.name === "searchSelectedBooks"
               ? buildSearchToolCacheKey(tool.name, toolInput)
               : undefined;
           if (searchCacheKey && searchResultCache.has(searchCacheKey)) {
@@ -947,7 +1028,8 @@ export async function* streamReadingAgent(
             return JSON.stringify(cachedResult);
           }
 
-          const result = await executeTool(tool, toolInput, toolTimeoutMs);
+          let result = await executeTool(tool, toolInput, toolTimeoutMs, signal);
+          result = filterSpoilerToolResult(tool.name, result, spoilerBoundary);
           if (exactCacheKey) {
             toolResultCache.set(exactCacheKey, result);
           }
@@ -984,6 +1066,7 @@ export async function* streamReadingAgent(
       { messages: inputMessages },
       {
         version: "v2",
+        signal,
         recursionLimit: isChapterTask
           ? CHAPTER_TASK_RECURSION_LIMIT
           : getRecursionLimitForCategory(questionCategory),
@@ -1003,14 +1086,23 @@ export async function* streamReadingAgent(
       if (isAborted()) {
         return { done: true, value: undefined };
       }
-      const abortPromise = new Promise<IteratorResult<unknown>>((resolve) => {
+      return new Promise<IteratorResult<unknown>>((resolve, reject) => {
         const onAbort = () => {
           signal?.removeEventListener("abort", onAbort);
           resolve({ done: true, value: undefined });
         };
         signal?.addEventListener("abort", onAbort);
+        iterator.next().then(
+          (result) => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve(result);
+          },
+          (error) => {
+            signal?.removeEventListener("abort", onAbort);
+            reject(error);
+          },
+        );
       });
-      return Promise.race([iterator.next(), abortPromise]);
     };
 
     const iterator = eventStream[Symbol.asyncIterator]();

@@ -35,7 +35,11 @@ export { getAvailableTools } from "./tools";
 
 export { getContextTools } from "./tools";
 
-export { readingContextService, getReadingContextSnapshot } from "./reading-context-service";
+export {
+  readingContextService,
+  getReadingContextSnapshot,
+  getSemanticReadingContext,
+} from "./reading-context-service";
 export {
   fallbackContentService,
   setFallbackContentProvider,

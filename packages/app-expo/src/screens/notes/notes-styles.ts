@@ -24,14 +24,19 @@ export const makeStyles = (colors: ThemeColors) =>
       paddingHorizontal: 16,
       paddingTop: 12,
       paddingBottom: 12,
-      borderBottomWidth: 0.5,
-      borderBottomColor: colors.border,
     },
-    headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+    headerRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      minHeight: 36,
+    },
     headerTitle: {
       fontSize: fontSize["2xl"],
+      lineHeight: 36,
       fontWeight: fontWeight.bold,
       color: colors.foreground,
+      includeFontPadding: false,
     },
     searchToggle: {
       width: 36,

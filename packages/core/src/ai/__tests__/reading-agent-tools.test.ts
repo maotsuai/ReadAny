@@ -95,12 +95,16 @@ describe("streamReadingAgent tool registration", () => {
       })),
     });
 
+    let observedSignal: AbortSignal | undefined;
     const tools: ToolDefinition[] = [
       {
         name: "slowTool",
         description: "A tool that never resolves",
         parameters: {},
-        execute: () => new Promise(() => {}),
+        execute: (_args, context) => {
+          observedSignal = context?.signal;
+          return new Promise(() => {});
+        },
       },
     ];
 
@@ -136,6 +140,7 @@ describe("streamReadingAgent tool registration", () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     await pending;
+    expect(observedSignal?.aborted).toBe(true);
   });
 
   it("keeps tool-call turn text out of the final response before addCitation completes", async () => {
@@ -493,6 +498,140 @@ describe("streamReadingAgent tool registration", () => {
     expect(toolNames.indexOf("getSurroundingContext")).toBeLessThan(toolNames.indexOf("ragSearch"));
   });
 
+  it("routes English current-page questions through immediate context tools", async () => {
+    let capturedTools: any[] = [];
+    createReactAgentMock.mockImplementation((config) => {
+      capturedTools = config.tools;
+      return {
+        streamEvents: vi.fn(() => ({
+          [Symbol.asyncIterator]: async function* () {
+            // no-op stream
+          },
+        })),
+      };
+    });
+
+    for await (const event of streamReadingAgent(
+      {
+        aiConfig: makeAIConfig(),
+        book: null,
+        bookId: "book-1",
+        semanticContext: null,
+        enabledSkills: [],
+        isVectorized: true,
+        getAvailableTools,
+      },
+      "What does this page mean?",
+    )) {
+      void event;
+    }
+
+    const toolNames = capturedTools.map((tool) => tool.name);
+    expect(toolNames[0]).toBe("getSurroundingContext");
+    expect(toolNames).toContain("ragSearch");
+  });
+
+  it("treats a bare immediate-explanation request as current-page context", async () => {
+    let capturedTools: any[] = [];
+    createReactAgentMock.mockImplementation((config) => {
+      capturedTools = config.tools;
+      return {
+        streamEvents: vi.fn(() => ({
+          [Symbol.asyncIterator]: async function* () {
+            // no-op stream
+          },
+        })),
+      };
+    });
+
+    for await (const event of streamReadingAgent(
+      {
+        aiConfig: makeAIConfig(),
+        book: null,
+        bookId: "book-1",
+        semanticContext: null,
+        enabledSkills: [],
+        isVectorized: true,
+        getAvailableTools,
+      },
+      "Explain this",
+    )) {
+      void event;
+    }
+
+    const toolNames = capturedTools.map((tool) => tool.name);
+    expect(toolNames[0]).toBe("getSurroundingContext");
+    expect(toolNames).toContain("ragContext");
+  });
+
+  it("uses selected-book search in standalone chat", async () => {
+    let capturedTools: any[] = [];
+    createReactAgentMock.mockImplementation((config) => {
+      capturedTools = config.tools;
+      return {
+        streamEvents: vi.fn(() => ({
+          [Symbol.asyncIterator]: async function* () {
+            // no-op stream
+          },
+        })),
+      };
+    });
+
+    for await (const event of streamReadingAgent(
+      {
+        aiConfig: makeAIConfig(),
+        book: null,
+        bookId: null,
+        selectedBookIds: ["book-1", "book-2"],
+        semanticContext: null,
+        enabledSkills: [],
+        isVectorized: false,
+        getAvailableTools,
+      },
+      "Compare the themes in these books",
+    )) {
+      void event;
+    }
+
+    const toolNames = capturedTools.map((tool) => tool.name);
+    expect(toolNames).toContain("searchSelectedBooks");
+    expect(toolNames).toContain("addCitation");
+    expect(toolNames).not.toContain("listBooks");
+  });
+
+  it("routes an ambiguous explanation in selected-books chat to selected-book search", async () => {
+    let capturedTools: any[] = [];
+    createReactAgentMock.mockImplementation((config) => {
+      capturedTools = config.tools;
+      return {
+        streamEvents: vi.fn(() => ({
+          [Symbol.asyncIterator]: async function* () {},
+        })),
+      };
+    });
+
+    for await (const event of streamReadingAgent(
+      {
+        aiConfig: makeAIConfig(),
+        book: null,
+        bookId: null,
+        selectedBookIds: ["book-1", "book-2"],
+        semanticContext: null,
+        enabledSkills: [],
+        isVectorized: false,
+        getAvailableTools,
+      },
+      "Explain this protagonist",
+    )) {
+      void event;
+    }
+
+    const toolNames = capturedTools.map((tool) => tool.name);
+    expect(toolNames).toContain("searchSelectedBooks");
+    expect(toolNames).not.toContain("getSurroundingContext");
+    expect(toolNames).not.toContain("listBooks");
+  });
+
   it("does not misroute generic analysis requests into current-page-only tools", async () => {
     let capturedTools: any[] = [];
     createReactAgentMock.mockImplementation((config) => {
@@ -527,6 +666,72 @@ describe("streamReadingAgent tool registration", () => {
     expect(toolNames).toContain("summarize");
     expect(toolNames).toContain("getCurrentChapter");
     expect(toolNames.indexOf("ragSearch")).toBeLessThan(toolNames.indexOf("getCurrentChapter"));
+  });
+
+  it("enforces spoiler boundaries on search results before returning them to the model", async () => {
+    getReadingContextSnapshotMock.mockReturnValue({
+      bookId: "book-1",
+      bookTitle: "Book One",
+      currentChapter: {
+        index: 3,
+        logicalIndex: 3,
+        title: "Chapter 4",
+        href: "chapter-4.xhtml",
+      },
+      currentPosition: {
+        cfi: "epubcfi(/6/8!/4/10)",
+        percentage: 0.4,
+      },
+      surroundingText: "current text",
+      recentHighlights: [],
+      operationType: "reading",
+      timestamp: Date.now(),
+    });
+    const searchTool: ToolDefinition = {
+      name: "ragSearch",
+      description: "Search content",
+      parameters: {
+        query: { type: "string", description: "query", required: true },
+      },
+      execute: vi.fn(async () => ({
+        results: [
+          { chapterIndex: 2, cfi: "epubcfi(/6/6!/4/2)", content: "safe" },
+          { chapterIndex: 3, cfi: "epubcfi(/6/8!/4/12)", content: "unread" },
+        ],
+      })),
+    };
+    let capturedTools: any[] = [];
+    createReactAgentMock.mockImplementation((config) => {
+      capturedTools = config.tools;
+      return {
+        streamEvents: vi.fn(() => ({
+          [Symbol.asyncIterator]: async function* () {
+            // no-op stream
+          },
+        })),
+      };
+    });
+
+    for await (const event of streamReadingAgent(
+      {
+        aiConfig: makeAIConfig(),
+        book: null,
+        bookId: "book-1",
+        semanticContext: null,
+        enabledSkills: [],
+        isVectorized: true,
+        spoilerFree: true,
+        getAvailableTools: () => [searchTool],
+      },
+      "Who is the main character?",
+    )) {
+      void event;
+    }
+
+    const wrappedSearch = capturedTools.find((tool) => tool.name === "ragSearch");
+    const result = JSON.parse(await wrappedSearch.func({ query: "main character" }));
+    expect(result.results.map((item: any) => item.content)).toEqual(["safe"]);
+    expect(result.spoilerFiltered).toBe(1);
   });
 
   it("keeps indexed search and toc fallbacks for specific chapter requests", async () => {

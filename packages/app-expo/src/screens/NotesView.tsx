@@ -321,7 +321,9 @@ export function NotesView({
       >
         {!hideDetailHeader && (
           <View style={s.header}>
-            <Text style={s.headerTitle}>{t("notes.title", "笔记")}</Text>
+            <Text style={s.headerTitle} maxFontSizeMultiplier={1.6}>
+              {t("notes.title", "笔记")}
+            </Text>
           </View>
         )}
         <View style={s.emptyWrap}>
@@ -515,7 +517,9 @@ export function NotesView({
       <View style={s.header}>
         <View style={s.headerRow}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Text style={s.headerTitle}>{t("notes.title", "笔记")}</Text>
+            <Text style={s.headerTitle} maxFontSizeMultiplier={1.6}>
+              {t("notes.title", "笔记")}
+            </Text>
             <SyncButton size={18} color={colors.mutedForeground} />
           </View>
           {bookNotebooks.length > 0 && (

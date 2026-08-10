@@ -7,9 +7,22 @@
  * - getReadingProgress: Get reading progress
  * - getRecentHighlights: Get recent highlights
  */
-import { getBook, getHighlights } from "../../db/database";
+import { getBook, getHighlights, getReadingSessions } from "../../db/database";
+import { resolveReadingChapterIndex } from "../reading-context-resolver";
 import { readingContextService } from "../reading-context-service";
 import type { ToolDefinition } from "./tool-types";
+
+function getBookContext(bookId: string) {
+  return readingContextService.getContextForBook(bookId);
+}
+
+function toProgress(fraction: number) {
+  const normalized = Math.max(0, Math.min(1, Number(fraction) || 0));
+  return {
+    fraction: normalized,
+    percentage: Math.round(normalized * 10_000) / 100,
+  };
+}
 
 export function createGetCurrentChapterTool(bookId: string): ToolDefinition {
   return {
@@ -17,8 +30,9 @@ export function createGetCurrentChapterTool(bookId: string): ToolDefinition {
     description:
       "Get information about the user's current reading chapter, including title, position, and progress. Use this when the user's question relates to their current location in the book.",
     parameters: {},
-    execute: async () => {
-      const context = readingContextService.getContext();
+    execute: async (_args, toolContext) => {
+      toolContext?.signal?.throwIfAborted();
+      const context = getBookContext(bookId);
       const book = await getBook(bookId);
 
       if (!context) {
@@ -28,15 +42,38 @@ export function createGetCurrentChapterTool(bookId: string): ToolDefinition {
         };
       }
 
+      const logicalChapterIndex = await resolveReadingChapterIndex({
+        bookId,
+        context,
+        indexed: book?.isVectorized ?? false,
+        signal: toolContext?.signal,
+        allowFallbackExtraction: false,
+      });
+      if (
+        logicalChapterIndex !== undefined &&
+        context.currentChapter.logicalIndex !== logicalChapterIndex
+      ) {
+        readingContextService.updateChapter({ logicalIndex: logicalChapterIndex }, bookId);
+      }
       return {
         bookId,
         bookTitle: book?.meta?.title || context.bookTitle,
-        chapter: context.currentChapter,
-        position: context.currentPosition,
+        chapter: {
+          title: context.currentChapter.title,
+          href: context.currentChapter.href,
+          index: logicalChapterIndex ?? context.currentChapter.index,
+          spineIndex: context.currentChapter.index,
+          logicalIndex: logicalChapterIndex,
+        },
+        position: {
+          cfi: context.currentPosition.cfi,
+          page: context.currentPosition.page,
+          ...toProgress(context.currentPosition.percentage),
+        },
         operationType: context.operationType,
         selectionActive: Boolean(context.selection?.text?.trim()),
         progress: {
-          percentage: context.currentPosition.percentage,
+          ...toProgress(context.currentPosition.percentage),
           page: context.currentPosition.page,
         },
         timestamp: context.timestamp,
@@ -45,14 +82,15 @@ export function createGetCurrentChapterTool(bookId: string): ToolDefinition {
   };
 }
 
-export function createGetSelectionTool(_bookId: string): ToolDefinition {
+export function createGetSelectionTool(bookId: string): ToolDefinition {
   return {
     name: "getSelection",
     description:
       "Get the text currently selected by the user in the reader. Use this when the user asks about specific text they've highlighted or selected.",
     parameters: {},
-    execute: async () => {
-      const context = readingContextService.getContext();
+    execute: async (_args, toolContext) => {
+      toolContext?.signal?.throwIfAborted();
+      const context = getBookContext(bookId);
 
       if (!context) {
         return {
@@ -68,10 +106,31 @@ export function createGetSelectionTool(_bookId: string): ToolDefinition {
         };
       }
 
+      const book = await getBook(bookId);
+      const selectionContext = {
+        ...context,
+        currentChapter: {
+          ...context.currentChapter,
+          index: context.selection.chapterIndex,
+          title: context.selection.chapterTitle || context.currentChapter.title,
+          logicalIndex: undefined,
+        },
+      };
+      const logicalChapterIndex = await resolveReadingChapterIndex({
+        bookId,
+        context: selectionContext,
+        indexed: book?.isVectorized ?? false,
+        signal: toolContext?.signal,
+        allowFallbackExtraction: false,
+      });
+
       return {
+        bookId,
         selectedText: context.selection.text,
         chapterTitle: context.selection.chapterTitle,
-        chapterIndex: context.selection.chapterIndex,
+        chapterIndex: logicalChapterIndex ?? context.selection.chapterIndex,
+        spineIndex: context.selection.chapterIndex,
+        logicalChapterIndex,
         cfi: context.selection.cfi,
         surroundingContext: context.surroundingText,
       };
@@ -86,27 +145,48 @@ export function createGetReadingProgressTool(bookId: string): ToolDefinition {
       "Get the user's reading progress for the current book, including percentage, time spent, and session info.",
     parameters: {},
     execute: async () => {
-      const context = readingContextService.getContext();
-      const book = await getBook(bookId);
+      const [book, sessions] = await Promise.all([getBook(bookId), getReadingSessions(bookId)]);
+      const context = getBookContext(bookId);
 
-      if (!context) {
+      if (!context && !book) {
         return {
-          error: "No reading context available",
+          error: "Book not found",
         };
       }
 
+      const fraction = context?.currentPosition.percentage ?? book?.progress ?? 0;
+      const totalReadingTimeMs = sessions.reduce(
+        (total, session) => total + session.totalActiveTime,
+        0,
+      );
+      const latestSession = sessions[0];
+
       return {
         bookId,
-        bookTitle: book?.meta?.title || context.bookTitle,
+        bookTitle: book?.meta?.title || context?.bookTitle || "",
         progress: {
-          percentage: context.currentPosition.percentage,
-          currentPage: context.currentPosition.page,
-          currentChapter: context.currentChapter.title,
-          currentChapterIndex: context.currentChapter.index,
+          ...toProgress(fraction),
+          currentPage: context?.currentPosition.page,
+          currentChapter: context?.currentChapter.title,
+          currentSpineIndex: context?.currentChapter.index,
         },
-        lastActivity: context.timestamp,
-        operationType: context.operationType,
-        selectionActive: Boolean(context.selection?.text?.trim()),
+        sessions: {
+          count: sessions.length,
+          totalReadingTimeMs,
+          totalPagesRead: sessions.reduce((total, session) => total + session.pagesRead, 0),
+          latest: latestSession
+            ? {
+                startedAt: latestSession.startedAt,
+                endedAt: latestSession.endedAt,
+                activeTimeMs: latestSession.totalActiveTime,
+                state: latestSession.state,
+              }
+            : undefined,
+        },
+        lastActivity: context?.timestamp || book?.lastOpenedAt,
+        operationType: context?.operationType,
+        selectionActive: Boolean(context?.selection?.text?.trim()),
+        liveContextAvailable: Boolean(context),
       };
     },
   };
@@ -116,7 +196,7 @@ export function createGetRecentHighlightsTool(bookId: string): ToolDefinition {
   return {
     name: "getRecentHighlights",
     description:
-      "Get the user's recent highlights and annotations from the current book. Use this to reference what the user has marked as important.",
+      "Get the user's most recently created highlights from the current book. Use this to reference what the user has marked as important.",
     parameters: {
       limit: {
         type: "number",
@@ -124,7 +204,7 @@ export function createGetRecentHighlightsTool(bookId: string): ToolDefinition {
       },
     },
     execute: async (args) => {
-      const limit = (args.limit as number) || 10;
+      const limit = Math.max(1, Math.min(50, Number(args.limit) || 10));
 
       const highlights = await getHighlights(bookId);
 
@@ -135,11 +215,13 @@ export function createGetRecentHighlightsTool(bookId: string): ToolDefinition {
         };
       }
 
-      const recentHighlights = highlights.slice(0, limit).map((h) => ({
+      const sortedHighlights = [...highlights].sort((a, b) => b.createdAt - a.createdAt);
+      const recentHighlights = sortedHighlights.slice(0, limit).map((h) => ({
         text: h.text,
         note: h.note,
         chapterTitle: h.chapterTitle,
         color: h.color,
+        cfi: h.cfi,
         createdAt: h.createdAt,
       }));
 
@@ -151,7 +233,7 @@ export function createGetRecentHighlightsTool(bookId: string): ToolDefinition {
   };
 }
 
-export function createGetSurroundingContextTool(_bookId: string): ToolDefinition {
+export function createGetSurroundingContextTool(bookId: string): ToolDefinition {
   return {
     name: "getSurroundingContext",
     description:
@@ -162,9 +244,12 @@ export function createGetSurroundingContextTool(_bookId: string): ToolDefinition
         description: "Whether to include selected text if available (default: true)",
       },
     },
-    execute: async (args) => {
+    execute: async (args, toolContext) => {
       const includeSelection = (args.includeSelection as boolean) ?? true;
-      const context = readingContextService.getContext();
+      toolContext?.signal?.throwIfAborted();
+      await readingContextService.refreshSurroundingText(bookId);
+      toolContext?.signal?.throwIfAborted();
+      const context = getBookContext(bookId);
 
       if (!context) {
         return {
@@ -172,12 +257,29 @@ export function createGetSurroundingContextTool(_bookId: string): ToolDefinition
         };
       }
 
+      const book = await getBook(bookId);
+      const logicalChapterIndex = await resolveReadingChapterIndex({
+        bookId,
+        context,
+        indexed: book?.isVectorized ?? false,
+        signal: toolContext?.signal,
+        allowFallbackExtraction: false,
+      });
+
       return {
+        bookId,
         currentChapter: context.currentChapter.title,
-        currentChapterIndex: context.currentChapter.index,
-        currentPosition: context.currentPosition.percentage,
+        chapterIndex: logicalChapterIndex ?? context.currentChapter.index,
+        currentSpineIndex: context.currentChapter.index,
+        logicalChapterIndex,
+        currentCfi: context.currentPosition.cfi,
+        progress: toProgress(context.currentPosition.percentage),
         currentPage: context.currentPosition.page,
         surroundingText: context.surroundingText,
+        surroundingTextUpdatedAt: context.surroundingTextUpdatedAt,
+        warning: context.surroundingText
+          ? undefined
+          : "No visible text could be extracted at the current reader position. Use currentCfi with ragContext or fallbackChapterContext.",
         selection: includeSelection ? context.selection : undefined,
         operationType: context.operationType,
         selectionActive: Boolean(context.selection?.text?.trim()),

@@ -1,5 +1,9 @@
 import { getBook } from "../db/database";
-import { type FallbackChapter, type FallbackTextSegment, fallbackContentService } from "./fallback-content-service";
+import {
+  type FallbackChapter,
+  type FallbackTextSegment,
+  fallbackContentService,
+} from "./fallback-content-service";
 
 export interface FallbackChaptersResult {
   bookTitle: string;
@@ -15,12 +19,16 @@ export interface ResolvedFallbackSource {
 
 export async function getFallbackChaptersForBook(
   bookId: string,
+  signal?: AbortSignal,
 ): Promise<FallbackChaptersResult | { error: string }> {
+  if (signal?.aborted) {
+    return { error: signal.reason instanceof Error ? signal.reason.message : "Operation aborted" };
+  }
   const book = await getBook(bookId);
   if (!book) return { error: "Book not found" };
 
   try {
-    const chapters = await fallbackContentService.getChapters(book);
+    const chapters = await fallbackContentService.getChapters(book, signal);
     if (chapters.length === 0) return { error: "No readable content found for this book" };
     return { bookTitle: book.meta.title, chapters };
   } catch (error) {

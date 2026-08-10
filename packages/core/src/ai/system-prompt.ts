@@ -36,6 +36,7 @@ interface PromptContext {
 
 /** Build the full system prompt from context */
 export function buildSystemPrompt(ctx: PromptContext): string {
+  const hasSelectedBooksContext = Boolean(ctx.allowedToolNames?.includes("searchSelectedBooks"));
   const sections: string[] = [
     buildRoleSection(),
     buildBookContextSection(ctx.book),
@@ -49,13 +50,14 @@ export function buildSystemPrompt(ctx: PromptContext): string {
       !!(ctx.book?.id || ctx.bookId),
       ctx.allowedToolNames,
     ),
-    buildWorkflowSection(ctx.isVectorized, !!(ctx.book?.id || ctx.bookId)),
+    buildWorkflowSection(ctx.isVectorized, !!(ctx.book?.id || ctx.bookId), hasSelectedBooksContext),
     buildConstraintsSection(
       ctx.userLanguage,
       ctx.isVectorized,
       ctx.spoilerFree,
       ctx.book,
       ctx.semanticContext,
+      hasSelectedBooksContext,
     ),
   ];
 
@@ -97,6 +99,7 @@ function buildSemanticSection(ctx: SemanticContext | null): string {
   return [
     "## Reading Context",
     `- Current Chapter: ${ctx.currentChapter}`,
+    ctx.currentPosition ? `- Current Position: ${ctx.currentPosition}` : "",
     `- Reader Activity: ${ctx.operationType}`,
     ctx.surroundingText ? `- Surrounding Text:\n> ${compactText(ctx.surroundingText, 280)}` : "",
     ctx.recentHighlights.length > 0
@@ -187,6 +190,16 @@ function buildToolsSection(
     "manageBookGroups",
     "- **manageBookGroups**: List/create/rename/delete groups or move books between groups (params: reasoning, action, groupId, name, bookIds)",
   );
+  pushTool(
+    "searchSelectedBooks",
+    "- **searchSelectedBooks**: Search only the books explicitly selected in standalone chat (params: query, topK). Every result includes bookId/bookTitle for attribution.",
+  );
+  if (canUse("searchSelectedBooks")) {
+    pushTool(
+      "addCitation",
+      "- **addCitation**: Verify and register a selected-book result (params: bookId, citationIndex, chapterTitle, chapterIndex, cfi, quotedText, reasoning). Use the exact bookId and source fields returned by searchSelectedBooks.",
+    );
+  }
   if (tools.length > generalStartIndex) {
     tools.splice(generalStartIndex, 0, "### General Tools");
   }
@@ -204,7 +217,7 @@ function buildToolsSection(
     );
     pushTool(
       "getRecentHighlights",
-      "- **getRecentHighlights**: Get user's recent highlights and annotations (params: limit)",
+      "- **getRecentHighlights**: Get the user's most recently created highlights (params: limit)",
     );
     pushTool(
       "getSurroundingContext",
@@ -232,7 +245,7 @@ function buildToolsSection(
     );
     pushTool(
       "ragContext",
-      "- **ragContext**: Get content around a specific chapter position (params: chapterIndex, range)",
+      "- **ragContext**: Get content around a specific chapter position (params: logical chapterIndex, cfi or chunkId, range). For the current page, pass logicalIndex and currentCfi returned by the context tools.",
     );
     if (tools.length > retrievalStartIndex) {
       tools.splice(retrievalStartIndex, 0, "", "### Content Retrieval Tools (RAG)");
@@ -278,7 +291,7 @@ function buildToolsSection(
     );
     pushTool(
       "fallbackChapterContext",
-      "- **fallbackChapterContext**: Read a specific chapter from the original file (params: chapterIndex)",
+      "- **fallbackChapterContext**: Read content near a position in the original file (params: logical chapterIndex, cfi, range). For the current page, pass logicalIndex and currentCfi returned by the context tools.",
     );
     if (tools.length > fallbackStartIndex) {
       tools.splice(fallbackStartIndex, 0, "", "### Fallback Content Tools (no vector index)");
@@ -317,7 +330,11 @@ function buildToolsSection(
   return `## Available Tools\n\n${tools.join("\n")}`;
 }
 
-function buildWorkflowSection(isVectorized: boolean, hasBookContext: boolean): string {
+function buildWorkflowSection(
+  isVectorized: boolean,
+  hasBookContext: boolean,
+  hasSelectedBooksContext = false,
+): string {
   const steps: string[] = [
     "## Core Workflow",
     "",
@@ -327,12 +344,16 @@ function buildWorkflowSection(isVectorized: boolean, hasBookContext: boolean): s
     "2. **Gather content** — Use the right tools to retrieve relevant content:",
   ];
 
-  if (!hasBookContext) {
+  if (!hasBookContext && !hasSelectedBooksContext) {
     steps.push("No current book is attached. For library-level questions, use general tools.");
     return steps.join("\n");
   }
 
-  if (isVectorized) {
+  if (hasSelectedBooksContext && !hasBookContext) {
+    steps.push(
+      "   - **searchSelectedBooks**: retrieve content only from the books selected in this chat",
+    );
+  } else if (isVectorized) {
     steps.push(
       "   - **resolveChapterReference**: first step for user-mentioned chapter numbers/titles; do not convert human chapter numbers to chapterIndex yourself",
     );
@@ -352,7 +373,9 @@ function buildWorkflowSection(isVectorized: boolean, hasBookContext: boolean): s
     steps.push("   - **fallbackChapterContext**: for reading a specific chapter without an index");
   }
 
-  steps.push("   - **getSurroundingContext**: for current page content");
+  if (hasBookContext) {
+    steps.push("   - **getSurroundingContext**: for current page content");
+  }
 
   steps.push("3. **Register citations before answering** — If your answer uses book content:");
   steps.push("   - Call **addCitation** before writing the final response body");
@@ -363,7 +386,14 @@ function buildWorkflowSection(isVectorized: boolean, hasBookContext: boolean): s
   steps.push("4. **Synthesize and answer** — Only after citation registration, write your answer");
   steps.push("");
 
-  if (isVectorized) {
+  if (hasSelectedBooksContext && !hasBookContext) {
+    steps.push("## CRITICAL: Selected-Book Citation Requirements");
+    steps.push("");
+    steps.push(
+      "For every book-content claim, call addCitation with the exact bookId, chapterIndex, cfi and quotedText returned by searchSelectedBooks. If a result has no CFI or verification fails, cite the book and chapter in plain text without a [N] marker.",
+    );
+    steps.push("");
+  } else if (isVectorized) {
     steps.push("## CRITICAL: Citation Requirements");
     steps.push("");
     steps.push("**You MUST cite all factual claims about the book's content.**");
@@ -485,10 +515,13 @@ function buildConstraintsSection(
   spoilerFree?: boolean,
   book?: Book | null,
   semanticContext?: SemanticContext | null,
+  hasSelectedBooksContext = false,
 ): string {
-  const citationGuideline = isVectorized
-    ? "- When citing indexed book content, use [1], [2] format with registered citations via addCitation tool"
-    : "- When citing non-indexed fallback content, use [1], [2] only after addCitation succeeds with a returned fallback cfi; otherwise use plain chapter names/indices and quoted excerpts";
+  const citationGuideline = hasSelectedBooksContext
+    ? "- For selected-book content, register citations with the exact bookId and CFI returned by searchSelectedBooks"
+    : isVectorized
+      ? "- When citing indexed book content, use [1], [2] format with registered citations via addCitation tool"
+      : "- When citing non-indexed fallback content, use [1], [2] only after addCitation succeeds with a returned fallback cfi; otherwise use plain chapter names/indices and quoted excerpts";
   const lines = [
     "## Response Guidelines",
     `- **IMPORTANT: You MUST respond in ${language || "English"}. This is non-negotiable regardless of the book's language.**`,
@@ -543,7 +576,7 @@ function buildConstraintsSection(
     lines.push("");
     lines.push("**What you CAN still discuss freely:**");
     lines.push(
-      "- Content from chapters the reader has already read (up to and including the current chapter)",
+      "- Content from completed chapters, plus only the verified portion of the current chapter up to the exact reading position",
     );
     lines.push("- General themes, writing style, literary techniques, and author background");
     lines.push("- The reader's own highlights and notes");

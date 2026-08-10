@@ -13,7 +13,7 @@ export interface FallbackChapter {
 }
 
 export interface FallbackContentProvider {
-  getChapters(book: Book): Promise<FallbackChapter[]>;
+  getChapters(book: Book, signal?: AbortSignal): Promise<FallbackChapter[]>;
 }
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -25,16 +25,29 @@ interface CachedChapters {
   cachedAt: number;
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+function abortError(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new Error("Book content reading aborted");
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let abortHandler: (() => void) | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
       reject(new Error("Timed out reading original book content"));
     }, timeoutMs);
+    if (signal) {
+      abortHandler = () => reject(abortError(signal));
+      if (signal.aborted) abortHandler();
+      else signal.addEventListener("abort", abortHandler, { once: true });
+    }
   });
 
   return Promise.race([promise, timeout]).finally(() => {
     if (timeoutId) clearTimeout(timeoutId);
+    if (signal && abortHandler) signal.removeEventListener("abort", abortHandler);
   });
 }
 
@@ -55,7 +68,8 @@ class FallbackContentService {
     this.cache.clear();
   }
 
-  async getChapters(book: Book): Promise<FallbackChapter[]> {
+  async getChapters(book: Book, signal?: AbortSignal): Promise<FallbackChapter[]> {
+    if (signal?.aborted) throw abortError(signal);
     if (!this.provider) {
       throw new Error("Fallback content provider is not registered");
     }
@@ -65,7 +79,12 @@ class FallbackContentService {
       return cached.chapters;
     }
 
-    const chapters = await withTimeout(this.provider.getChapters(book), PROVIDER_TIMEOUT_MS);
+    const chapters = await withTimeout(
+      this.provider.getChapters(book, signal),
+      PROVIDER_TIMEOUT_MS,
+      signal,
+    );
+    if (signal?.aborted) throw abortError(signal);
     this.cache.set(book.id, { chapters, cachedAt: Date.now() });
 
     if (this.cache.size > MAX_CACHE_ENTRIES) {

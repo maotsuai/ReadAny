@@ -149,11 +149,7 @@ const NOTE_TOOLTIP_TOP_THRESHOLD = 180;
 import { useRubyStore } from "@readany/core/stores/ruby-store";
 import { ReaderSettingsPanel } from "./reader/ReaderSettingsPanel";
 import { ReaderTOCPanel } from "./reader/ReaderTOCPanel";
-import {
-  CONTROLS_TIMEOUT,
-  SCREEN_HEIGHT,
-  SCREEN_WIDTH,
-} from "./reader/reader-constants";
+import { CONTROLS_TIMEOUT, SCREEN_HEIGHT, SCREEN_WIDTH } from "./reader/reader-constants";
 import { BatteryIcon, ListIcon, SettingsIcon } from "./reader/reader-icons";
 import { makeStyles, noteTooltipMdStyles } from "./reader/reader-styles";
 import { useReaderBookmark } from "./reader/useReaderBookmark";
@@ -241,6 +237,10 @@ export function ReaderScreen({ route, navigation }: Props) {
   const [readerHtmlUri, setReaderHtmlUri] = useState<string | null>(null);
   const [currentCfi, setCurrentCfi] = useState("");
   const [selection, setSelection] = useState<SelectionEvent | null>(null);
+
+  useEffect(() => {
+    if (!selection) readingContextService.clearSelection(bookId);
+  }, [bookId, selection]);
   const [fontServerUrl, setFontServerUrl] = useState<string | null>(null);
   const [noteViewHighlight, setNoteViewHighlight] = useState<{
     id: string;
@@ -766,17 +766,22 @@ export function ReaderScreen({ route, navigation }: Props) {
       }
 
       // Sync reading context for AI tools
-      readingContextService.updateContext({
+      const previousContext = readingContextService.getContextForBook(bookId);
+      void readingContextService.updateContext({
         bookId,
         bookTitle: book?.meta?.title || "",
         currentChapter: {
           index: detail.section?.current ?? 0,
-          title: detail.tocItem?.label || "",
-          href: detail.tocItem?.href || "",
+          title:
+            detail.tocItem?.label ||
+            previousContext?.currentChapter.title ||
+            `Section ${(detail.section?.current ?? 0) + 1}`,
+          href: detail.tocItem?.href || previousContext?.currentChapter.href || "",
         },
         currentPosition: {
-          cfi: detail.cfi || "",
-          percentage: (detail.fraction ?? 0) * 100,
+          cfi: detail.cfi || previousContext?.currentPosition.cfi || "",
+          percentage: detail.fraction ?? previousContext?.currentPosition.percentage ?? 0,
+          page: detail.page?.current ?? previousContext?.currentPosition.page,
         },
       });
     },
@@ -787,17 +792,21 @@ export function ReaderScreen({ route, navigation }: Props) {
       setSelection(detail);
       // Sync selection for AI tools
       if (detail.cfi) {
-        readingContextService.updateSelection({
-          text: detail.text,
-          cfi: detail.cfi,
-          chapterIndex: 0,
-          chapterTitle: "",
-        });
+        const context = readingContextService.getContextForBook(bookId);
+        readingContextService.updateSelection(
+          {
+            text: detail.text,
+            cfi: detail.cfi,
+            chapterIndex: context?.currentChapter.index ?? 0,
+            chapterTitle: context?.currentChapter.title || "",
+          },
+          bookId,
+        );
       }
     },
     onSelectionCleared: () => {
       setSelection(null);
-      readingContextService.clearSelection();
+      readingContextService.clearSelection(bookId);
     },
     onTap: () => {
       if (noteTooltipVisibleRef.current || Date.now() < suppressReaderTapUntilRef.current) {
@@ -806,6 +815,7 @@ export function ReaderScreen({ route, navigation }: Props) {
       sendEvent({ type: "activity" });
       if (selection) {
         setSelection(null);
+        readingContextService.clearSelection(bookId);
         return;
       }
       toggleControls();
@@ -838,6 +848,16 @@ export function ReaderScreen({ route, navigation }: Props) {
         cfi: highlight.cfi,
         position: detail.position,
       });
+      const context = readingContextService.getContextForBook(bookId);
+      readingContextService.updateSelection(
+        {
+          text: highlight.text,
+          cfi: highlight.cfi,
+          chapterIndex: context?.currentChapter.index ?? 0,
+          chapterTitle: highlight.chapterTitle || context?.currentChapter.title || "",
+        },
+        bookId,
+      );
     },
     onNoteTooltip: (detail) => {
       suppressReaderTapUntilRef.current = Date.now() + 900;
@@ -893,10 +913,25 @@ export function ReaderScreen({ route, navigation }: Props) {
       appActive,
     // 维护约定：任何新增遮盖正文/输入态/导航跳转，必须在此追加判定。
     [
-      readSettings.volumeButtonsPageTurn, webViewReady, loading, error, isReimporting,
-      showSearch, showTOC, showSettings, showNotebook, showTTS,
-      showTranslation, showChapterTranslation, chapterTranslation.state.status,
-      selection, noteViewHighlight, noteTooltip, ttsPlayState, isFocused, appActive,
+      readSettings.volumeButtonsPageTurn,
+      webViewReady,
+      loading,
+      error,
+      isReimporting,
+      showSearch,
+      showTOC,
+      showSettings,
+      showNotebook,
+      showTTS,
+      showTranslation,
+      showChapterTranslation,
+      chapterTranslation.state.status,
+      selection,
+      noteViewHighlight,
+      noteTooltip,
+      ttsPlayState,
+      isFocused,
+      appActive,
     ],
   );
 
@@ -1050,6 +1085,15 @@ export function ReaderScreen({ route, navigation }: Props) {
     return () => setGoToCfiFn(null);
   }, [bridge.goToCFI, setGoToCfiFn]);
 
+  useEffect(
+    () =>
+      readingContextService.registerSurroundingTextProvider(bookId, async () => {
+        const text = await bridge.getVisibleText();
+        return text.slice(0, 4000);
+      }),
+    [bookId, bridge.getVisibleText],
+  );
+
   // ── Book loading effects ───────────────────────────────────────────────────
 
   // Load book metadata and annotations
@@ -1064,7 +1108,7 @@ export function ReaderScreen({ route, navigation }: Props) {
     loadAnnotations(bookId);
 
     return () => {
-      readingContextService.clearContext();
+      readingContextService.clearContext(bookId);
     };
   }, [bookId]);
 
@@ -1608,6 +1652,9 @@ export function ReaderScreen({ route, navigation }: Props) {
               bookId,
               selectedText,
               chapterTitle: chapter,
+              chapterIndex:
+                readingContextService.getContextForBook(bookId)?.currentChapter.index ?? 0,
+              selectedCfi: selectionPopoverSelection.cfi,
             });
           }}
           onNote={(text, cfi) => {

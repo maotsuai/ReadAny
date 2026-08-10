@@ -31,8 +31,10 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { FallbackContentProvider } from "@/components/rag/FallbackContentProvider";
 import { AnimatedSplash } from "@/components/splash/AnimatedSplash";
 import { rnSessionEventSource } from "@/hooks";
+import { readingContextService } from "@readany/core/ai/reading-context-service";
 import { setStreamingFetch } from "@readany/core/ai/llm-provider";
 import { initDatabase } from "@readany/core/db/database";
 import { installFeedbackLogCapture, setFeedbackWorkerUrl } from "@readany/core/feedback";
@@ -98,6 +100,7 @@ export default function App() {
 
         console.log("[App] bootstrap: init database");
         await initDatabase();
+        await readingContextService.initialize();
 
         console.log("[App] bootstrap: wait i18nReady");
         await i18nReady;
@@ -283,6 +286,7 @@ function AppInner() {
           </NavigationContainer>
           <UpdateDialog />
           <FloatingTTSBubble />
+          <FallbackContentProvider />
         </SafeAreaProvider>
       </KeyboardProvider>
     </GestureHandlerRootView>

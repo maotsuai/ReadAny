@@ -15,7 +15,10 @@ function parseToolResult(result: unknown): Record<string, unknown> | null {
   return result && typeof result === "object" ? (result as Record<string, unknown>) : null;
 }
 
-function findCitationIndexFromToolCalls(entry: any, toolCalls: any[] | undefined): number | undefined {
+function findCitationIndexFromToolCalls(
+  entry: any,
+  toolCalls: any[] | undefined,
+): number | undefined {
   if (!toolCalls) return undefined;
   for (const tc of toolCalls) {
     if (tc.name !== "addCitation") continue;
@@ -87,6 +90,10 @@ export function convertToMessageV2(messages: any[]): MessageV2[] {
               type: "quote",
               text: entry.text || "",
               source: entry.source,
+              bookId: entry.bookId,
+              chapterTitle: entry.chapterTitle,
+              chapterIndex: entry.chapterIndex,
+              cfi: entry.cfi,
               status: "completed",
               createdAt: m.createdAt,
             });

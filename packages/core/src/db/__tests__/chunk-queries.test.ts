@@ -1,5 +1,5 @@
-import type { Chunk } from "../../types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Chunk } from "../../types";
 
 const mockExecute = vi.fn();
 const mockSelect = vi.fn();
@@ -29,6 +29,9 @@ vi.mock("../db-core", () => coreMocks);
 
 const {
   getChunks,
+  getChunksWithoutEmbeddings,
+  getChapterChunks,
+  getChunkOutlines,
   insertChunks,
   deleteChunks,
 } = await import("../chunk-queries");
@@ -89,6 +92,82 @@ describe("chunk-queries", () => {
       const chunks = await getChunks("book-1");
       expect(chunks[0].segmentCfis).toEqual(["cfi1", "cfi2"]);
     });
+
+    it("sorts generated chunk ids by numeric order instead of lexicographic order", async () => {
+      mockLocalDb.select.mockResolvedValue(
+        [10, 2, 1].map((index) => ({
+          id: `book-1-0-${index}`,
+          book_id: "book-1",
+          chapter_index: 0,
+          chapter_title: "Chapter 1",
+          content: `chunk ${index}`,
+          token_count: 2,
+          start_cfi: null,
+          end_cfi: null,
+          segment_cfis: null,
+          embedding: null,
+        })),
+      );
+
+      const chunks = await getChunks("book-1");
+      expect(chunks.map((chunk) => chunk.id)).toEqual(["book-1-0-1", "book-1-0-2", "book-1-0-10"]);
+    });
+  });
+
+  describe("lightweight chunk reads", () => {
+    it("does not select or deserialize embedding blobs for metadata reads", async () => {
+      mockLocalDb.select.mockResolvedValue([
+        {
+          id: "book-1-0-0",
+          book_id: "book-1",
+          chapter_index: 0,
+          chapter_title: "Chapter 1",
+          content: "text",
+          token_count: 1,
+          start_cfi: null,
+          end_cfi: null,
+          segment_cfis: null,
+        },
+      ]);
+
+      const chunks = await getChunksWithoutEmbeddings("book-1");
+
+      expect(chunks[0].embedding).toBeUndefined();
+      expect(coreMocks.deserializeEmbedding).not.toHaveBeenCalled();
+      expect(String(mockLocalDb.select.mock.calls[0][0])).not.toMatch(/\bembedding\b/);
+    });
+
+    it("scopes chapter context reads in SQL", async () => {
+      mockLocalDb.select.mockResolvedValue([]);
+
+      await getChapterChunks("book-1", 7);
+
+      expect(mockLocalDb.select).toHaveBeenCalledWith(
+        expect.stringContaining("chapter_index = ?"),
+        ["book-1", 7],
+      );
+    });
+
+    it("caps metadata previews in SQL without selecting full chunk content", async () => {
+      mockLocalDb.select.mockResolvedValue([
+        {
+          id: "book-1-0-0",
+          book_id: "book-1",
+          chapter_index: 0,
+          chapter_title: "Chapter 1",
+          preview: "short preview",
+          start_cfi: "cfi-1",
+          end_cfi: "cfi-2",
+        },
+      ]);
+
+      const outlines = await getChunkOutlines("book-1");
+
+      expect(outlines[0].preview).toBe("short preview");
+      const sql = String(mockLocalDb.select.mock.calls[0][0]);
+      expect(sql).toContain("substr(content, 1, 500) AS preview");
+      expect(sql).not.toMatch(/,\s*content\s*,/);
+    });
   });
 
   describe("insertChunks", () => {
@@ -147,10 +226,9 @@ describe("chunk-queries", () => {
       mockLocalDb.execute.mockResolvedValue(undefined);
 
       await deleteChunks("book-1");
-      expect(mockLocalDb.execute).toHaveBeenCalledWith(
-        "DELETE FROM chunks WHERE book_id = ?",
-        ["book-1"],
-      );
+      expect(mockLocalDb.execute).toHaveBeenCalledWith("DELETE FROM chunks WHERE book_id = ?", [
+        "book-1",
+      ]);
     });
   });
 });

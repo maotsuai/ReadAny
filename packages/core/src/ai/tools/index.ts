@@ -46,11 +46,15 @@ import {
   createRagTocTool,
   createResolveChapterReferenceTool,
 } from "./rag-tools";
+import {
+  createSearchSelectedBooksTool,
+  createSelectedBooksCitationTool,
+} from "./selected-books-tools";
 import { createGetSkillsTool, skillToTool } from "./skill-tools";
 import type { ToolDefinition } from "./tool-types";
 
 // Re-export types and key functions for external consumers
-export type { ToolDefinition, ToolParameter } from "./tool-types";
+export type { ToolDefinition, ToolExecutionContext, ToolParameter } from "./tool-types";
 export { getContextTools } from "./context-tools";
 
 /** Get general (non-book-specific) tools */
@@ -73,13 +77,23 @@ function getGeneralTools(): ToolDefinition[] {
 /** Get available tools based on current state */
 export function getAvailableTools(options: {
   bookId?: string | null;
+  selectedBookIds?: string[];
   isVectorized: boolean;
   enabledSkills: Skill[];
+  spoilerFree?: boolean;
 }): ToolDefinition[] {
   const tools: ToolDefinition[] = [];
 
   // General tools are always available (no bookId required)
   tools.push(...getGeneralTools());
+
+  const selectedBookIds = [...new Set(options.selectedBookIds ?? [])].filter(Boolean);
+  if (!options.bookId && selectedBookIds.length > 0) {
+    tools.push(
+      createSearchSelectedBooksTool(selectedBookIds, { spoilerFree: options.spoilerFree }),
+      createSelectedBooksCitationTool(selectedBookIds, { spoilerFree: options.spoilerFree }),
+    );
+  }
 
   if (options.bookId) {
     // Context tools (always available when book is loaded)

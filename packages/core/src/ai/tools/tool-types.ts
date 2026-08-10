@@ -7,7 +7,12 @@ export interface ToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, ToolParameter>;
-  execute: (args: Record<string, unknown>) => Promise<unknown>;
+  execute: (args: Record<string, unknown>, context?: ToolExecutionContext) => Promise<unknown>;
+}
+
+export interface ToolExecutionContext {
+  /** Aborted when the user stops generation or the per-tool timeout expires. */
+  signal?: AbortSignal;
 }
 
 export interface ToolParameter {

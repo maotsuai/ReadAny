@@ -5,9 +5,13 @@ import { extractBookChapters } from "./book-extractor";
 
 export function registerDesktopFallbackContentProvider(): void {
   setFallbackContentProvider({
-    async getChapters(book: Book) {
+    async getChapters(book: Book, signal?: AbortSignal) {
+      signal?.throwIfAborted();
       const filePath = await resolveDesktopDataPath(book.filePath);
-      return extractBookChapters(filePath);
+      signal?.throwIfAborted();
+      const chapters = await extractBookChapters(filePath);
+      signal?.throwIfAborted();
+      return chapters;
     },
   });
 }

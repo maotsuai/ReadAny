@@ -9,6 +9,11 @@ export interface AttachedQuote {
   text: string;
   /** Optional source info, e.g. chapter title */
   source?: string;
+  bookId?: string;
+  chapterTitle?: string;
+  chapterIndex?: number;
+  /** Precise reader location captured when the quote was attached. */
+  cfi?: string;
 }
 
 export type MessageRole = "user" | "assistant" | "system";
@@ -89,12 +94,16 @@ export interface ReadingContext {
   bookId: string;
   bookTitle: string;
   currentChapter: {
+    /** Renderer/spine section index. This is not necessarily the RAG chapter index. */
     index: number;
+    /** Logical chapter index used by RAG/fallback tools, resolved on demand when available. */
+    logicalIndex?: number;
     title: string;
     href: string;
   };
   currentPosition: {
     cfi: string;
+    /** Normalized reading progress fraction in the range 0..1. */
     percentage: number;
     page?: number;
   };
@@ -105,6 +114,8 @@ export interface ReadingContext {
     chapterTitle: string;
   };
   surroundingText: string;
+  /** Timestamp of the latest successful visible-text extraction. */
+  surroundingTextUpdatedAt?: number;
   recentHighlights: Array<{
     text: string;
     cfi: string;
@@ -119,7 +130,7 @@ export interface SemanticContext {
   currentPosition: string;
   surroundingText: string;
   recentHighlights: string[];
-  operationType: "reading" | "highlighting" | "searching" | "navigating";
+  operationType: "reading" | "highlighting" | "searching" | "navigating" | "selecting";
 }
 
 export type AIProviderType =

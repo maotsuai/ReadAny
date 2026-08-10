@@ -75,7 +75,7 @@ const THINK_DARK_PNG = require("../../assets/think-dark.png");
 type Props = NativeStackScreenProps<RootStackParamList, "BookChat">;
 
 export function BookChatScreen({ route, navigation }: Props) {
-  const { bookId, selectedText, chapterTitle } = route.params;
+  const { bookId, selectedText, chapterTitle, chapterIndex, selectedCfi } = route.params;
   const { t } = useTranslation();
   const colors = useColors();
   const { isDark } = useTheme();
@@ -103,10 +103,14 @@ export function BookChatScreen({ route, navigation }: Props) {
           id: `quote-${Date.now()}`,
           text: selectedText,
           source: chapterTitle || undefined,
+          bookId,
+          chapterTitle,
+          chapterIndex,
+          cfi: selectedCfi,
         },
       ]);
     }
-  }, [selectedText, chapterTitle, quotes.length]);
+  }, [bookId, selectedText, chapterTitle, chapterIndex, selectedCfi, quotes.length]);
 
   const handleRemoveQuote = useCallback((id: string) => {
     setQuotes((prev) => prev.filter((q) => q.id !== id));
@@ -235,7 +239,8 @@ export function BookChatScreen({ route, navigation }: Props) {
     return convertToMessageV2(activeThread.messages);
   }, [activeThread]);
 
-  const activeCurrentMessage = activeThread?.id === currentMessage?.threadId ? currentMessage : null;
+  const activeCurrentMessage =
+    activeThread?.id === currentMessage?.threadId ? currentMessage : null;
   const allMessages = useMemo(
     () => mergeMessagesWithStreaming(messagesV2, activeCurrentMessage, isStreaming),
     [activeCurrentMessage, isStreaming, messagesV2],

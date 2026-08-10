@@ -662,11 +662,10 @@ const makeStyles = (colors: ThemeColors) =>
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
+      minHeight: 60,
       paddingHorizontal: 16,
       paddingTop: 12,
       paddingBottom: 12,
-      borderBottomWidth: 0.5,
-      borderBottomColor: colors.border,
     },
     headerTitleWrap: {
       flex: 1,
@@ -675,9 +674,10 @@ const makeStyles = (colors: ThemeColors) =>
     },
     headerTitle: {
       fontSize: fontSize["2xl"],
-      lineHeight: fontSize["2xl"] * 1.4,
+      lineHeight: 36,
       fontWeight: fontWeight.bold,
       color: colors.foreground,
+      includeFontPadding: false,
     },
     scrollView: { flex: 1 },
     // Stats

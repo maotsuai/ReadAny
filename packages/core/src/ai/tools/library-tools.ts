@@ -8,7 +8,7 @@ import {
   getAllNotes,
   getBook,
   getBooks,
-  getChunks,
+  getChunkOutlines,
   getGroups,
   getReadingSessionsByDateRange,
   insertGroup,
@@ -481,7 +481,7 @@ export function createClassifyBooksTool(): ToolDefinition {
       /** Extract TOC and content samples from chunks for a given book */
       const getBookContentInfo = async (bookId: string) => {
         try {
-          const chunks = await getChunks(bookId);
+          const chunks = await getChunkOutlines(bookId);
           if (chunks.length === 0) return { toc: [], contentSample: "" };
 
           // Extract TOC
@@ -498,7 +498,7 @@ export function createClassifyBooksTool(): ToolDefinition {
           // Sample first few chunks as content preview (up to ~1500 chars)
           let contentSample = "";
           for (const chunk of chunks.slice(0, 5)) {
-            contentSample += `${chunk.content}\n`;
+            contentSample += `${chunk.preview}\n`;
             if (contentSample.length > 1500) break;
           }
           contentSample = contentSample.slice(0, 1500);

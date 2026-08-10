@@ -3,7 +3,7 @@ import type { TOCItem } from "@readany/core/types";
  * useReaderBridge — encapsulates RN ↔ WebView postMessage communication
  * for the foliate-js reader engine.
  */
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { WebView } from "react-native-webview";
 
 export interface RelocateEvent {
@@ -86,7 +86,9 @@ export function useReaderBridge(callbacks: ReaderBridgeCallbacks) {
   const webViewRef = useRef<WebView>(null);
   const callbacksRef = useRef(callbacks);
   callbacksRef.current = callbacks;
-  const pendingVisibleTextResolveRef = useRef<((text: string) => void) | null>(null);
+  const pendingVisibleTextResolveRef = useRef(
+    new Map<string, { resolve: (text: string) => void; timer: ReturnType<typeof setTimeout> }>(),
+  );
   const pendingVisibleTTSSegmentsResolveRef = useRef(
     new Map<string, (segments: VisibleTTSSegment[]) => void>(),
   );
@@ -311,39 +313,51 @@ export function useReaderBridge(callbacks: ReaderBridgeCallbacks) {
 
   const getVisibleText = useCallback(() => {
     return new Promise<string>((resolve) => {
-      // Store the resolve function so handleMessage can call it
-      pendingVisibleTextResolveRef.current = resolve;
+      const requestId = createRequestId("visible-text");
+      const timer = setTimeout(() => {
+        const pending = pendingVisibleTextResolveRef.current.get(requestId);
+        if (!pending) return;
+        pendingVisibleTextResolveRef.current.delete(requestId);
+        pending.resolve("");
+      }, 2000);
+      pendingVisibleTextResolveRef.current.set(requestId, { resolve, timer });
 
       webViewRef.current?.injectJavaScript(`
         (function() {
+          var requestId = ${JSON.stringify(requestId)};
           try {
             if (!window.getVisibleText) {
-              window.ReactNativeWebView.postMessage(JSON.stringify({type:'visibleText',text:'',error:'getVisibleText not defined'}));
+              window.ReactNativeWebView.postMessage(JSON.stringify({type:'visibleText',requestId:requestId,text:'',error:'getVisibleText not defined'}));
               return;
             }
             var resultStr = window.getVisibleText();
             var result = JSON.parse(resultStr);
             window.ReactNativeWebView.postMessage(JSON.stringify({
               type:'visibleText',
+              requestId:requestId,
               text: result.text || '',
               error: result.error || null,
               debug: result.debug || null
             }));
           } catch(e) {
-            window.ReactNativeWebView.postMessage(JSON.stringify({type:'visibleText',text:'',error:String(e)}));
+            window.ReactNativeWebView.postMessage(JSON.stringify({type:'visibleText',requestId:requestId,text:'',error:String(e)}));
           }
         })();
         true;
       `);
-      // Resolve with empty string after timeout
-      setTimeout(() => {
-        if (pendingVisibleTextResolveRef.current === resolve) {
-          pendingVisibleTextResolveRef.current = null;
-          resolve("");
-        }
-      }, 2000);
     });
-  }, []);
+  }, [createRequestId]);
+
+  useEffect(
+    () => () => {
+      for (const pending of pendingVisibleTextResolveRef.current.values()) {
+        clearTimeout(pending.timer);
+        pending.resolve("");
+      }
+      pendingVisibleTextResolveRef.current.clear();
+    },
+    [],
+  );
 
   const getVisibleTTSSegments = useCallback(
     (alignCfi?: string | null) => {
@@ -684,232 +698,240 @@ export function useReaderBridge(callbacks: ReaderBridgeCallbacks) {
 
   // ─── Handle messages from WebView ───
 
-  const handleMessage = useCallback(
-    (event: { nativeEvent: { data: string } }) => {
-      try {
-        const msg = JSON.parse(event.nativeEvent.data);
-        const cb = callbacksRef.current;
+  const handleMessage = useCallback((event: { nativeEvent: { data: string } }) => {
+    try {
+      const msg = JSON.parse(event.nativeEvent.data);
+      const cb = callbacksRef.current;
 
-        switch (msg.type) {
-          case "ready":
-            cb.onReady?.();
-            break;
-          case "loaded":
-            cb.onLoaded?.();
-            break;
-          case "relocate":
-            cb.onRelocate?.(msg);
-            break;
-          case "bookTextMetrics":
-            cb.onBookTextMetrics?.({
-              totalCharacters: Number(msg.totalCharacters) || 0,
+      switch (msg.type) {
+        case "ready":
+          cb.onReady?.();
+          break;
+        case "loaded":
+          cb.onLoaded?.();
+          break;
+        case "relocate":
+          cb.onRelocate?.(msg);
+          break;
+        case "bookTextMetrics":
+          cb.onBookTextMetrics?.({
+            totalCharacters: Number(msg.totalCharacters) || 0,
+          });
+          break;
+        case "toc":
+          cb.onTocReady?.(msg.items || []);
+          break;
+        case "selection":
+          cb.onSelection?.(msg);
+          break;
+        case "selectionCleared":
+          cb.onSelectionCleared?.();
+          break;
+        case "tap":
+          cb.onTap?.();
+          break;
+        case "searchResult":
+          cb.onSearchResult?.(msg.index || 0, msg.count || 0);
+          break;
+        case "searchComplete":
+          cb.onSearchComplete?.(msg.count || 0);
+          break;
+        case "error":
+          console.error("[ReaderBridge] Error from WebView:", msg.message);
+          cb.onError?.(msg.message || "Unknown error");
+          break;
+        case "foliate-loaded":
+          break;
+        case "show-annotation":
+          if (msg.value && msg.position) {
+            cb.onShowAnnotation?.({
+              value: msg.value,
+              range: msg.range,
+              position: msg.position,
             });
-            break;
-          case "toc":
-            cb.onTocReady?.(msg.items || []);
-            break;
-          case "selection":
-            cb.onSelection?.(msg);
-            break;
-          case "selectionCleared":
-            cb.onSelectionCleared?.();
-            break;
-          case "tap":
-            cb.onTap?.();
-            break;
-          case "searchResult":
-            cb.onSearchResult?.(msg.index || 0, msg.count || 0);
-            break;
-          case "searchComplete":
-            cb.onSearchComplete?.(msg.count || 0);
-            break;
-          case "error":
-            console.error("[ReaderBridge] Error from WebView:", msg.message);
-            cb.onError?.(msg.message || "Unknown error");
-            break;
-          case "foliate-loaded":
-            break;
-          case "show-annotation":
-            if (msg.value && msg.position) {
-              cb.onShowAnnotation?.({
-                value: msg.value,
-                range: msg.range,
-                position: msg.position,
-              });
-            }
-            break;
-          case "note-tooltip":
-            if (msg.cfi && msg.note && msg.position) {
-              cb.onNoteTooltip?.({
-                cfi: msg.cfi,
-                note: msg.note,
-                position: msg.position,
-              });
-            }
-            break;
-          case "pageSnippet":
-            cb.onPageSnippet?.(msg.textSnippet || "");
-            break;
-          case "bookmarkSnippet":
-            cb.onBookmarkSnippet?.(msg.textSnippet || "");
-            break;
-          case "toggleBookmark":
-            cb.onToggleBookmark?.();
-            break;
-          case "bookmarkPull":
-            cb.onBookmarkPull?.({
-              offset: typeof msg.offset === "number" ? msg.offset : 0,
-              armed: !!msg.armed,
-              active: !!msg.active,
+          }
+          break;
+        case "note-tooltip":
+          if (msg.cfi && msg.note && msg.position) {
+            cb.onNoteTooltip?.({
+              cfi: msg.cfi,
+              note: msg.note,
+              position: msg.position,
             });
-            break;
-          case "visibleText":
-            console.log(
-              "[ReaderBridge] received visibleText:",
-              JSON.stringify({
-                textLength: msg.text?.length || 0,
-                error: msg.error || "none",
-                debug: msg.debug || null,
-              }),
-            );
-            if (pendingVisibleTextResolveRef.current) {
-              pendingVisibleTextResolveRef.current(msg.text || "");
-              pendingVisibleTextResolveRef.current = null;
+          }
+          break;
+        case "pageSnippet":
+          cb.onPageSnippet?.(msg.textSnippet || "");
+          break;
+        case "bookmarkSnippet":
+          cb.onBookmarkSnippet?.(msg.textSnippet || "");
+          break;
+        case "toggleBookmark":
+          cb.onToggleBookmark?.();
+          break;
+        case "bookmarkPull":
+          cb.onBookmarkPull?.({
+            offset: typeof msg.offset === "number" ? msg.offset : 0,
+            armed: !!msg.armed,
+            active: !!msg.active,
+          });
+          break;
+        case "visibleText":
+          console.log(
+            "[ReaderBridge] received visibleText:",
+            JSON.stringify({
+              textLength: msg.text?.length || 0,
+              error: msg.error || "none",
+              debug: msg.debug || null,
+            }),
+          );
+          {
+            const requestId = typeof msg.requestId === "string" ? msg.requestId : null;
+            const fallbackEntry = pendingVisibleTextResolveRef.current.entries().next().value as
+              | [string, { resolve: (text: string) => void; timer: ReturnType<typeof setTimeout> }]
+              | undefined;
+            const resolvedRequestId = requestId || fallbackEntry?.[0];
+            const pending = resolvedRequestId
+              ? pendingVisibleTextResolveRef.current.get(resolvedRequestId)
+              : undefined;
+            if (pending && resolvedRequestId) {
+              clearTimeout(pending.timer);
+              pendingVisibleTextResolveRef.current.delete(resolvedRequestId);
+              pending.resolve(msg.text || "");
             }
-            break;
-          case "visibleTTSSegments":
-            {
-              if (msg.debug) {
-                console.log("[ReaderBridge] visibleTTSSegments debug:", JSON.stringify(msg.debug));
-              }
-              const requestId = typeof msg.requestId === "string" ? msg.requestId : null;
-              const pendingResolve = requestId
-                ? pendingVisibleTTSSegmentsResolveRef.current.get(requestId)
-                : pendingVisibleTTSSegmentsResolveRef.current.values().next().value;
-              if (pendingResolve) {
-                if (msg.error) {
-                  console.warn("[ReaderBridge] visibleTTSSegments error:", msg.error);
-                }
-                pendingResolve(msg.segments || []);
-                if (requestId) {
-                  pendingVisibleTTSSegmentsResolveRef.current.delete(requestId);
-                } else {
-                  pendingVisibleTTSSegmentsResolveRef.current.clear();
-                }
-              }
+          }
+          break;
+        case "visibleTTSSegments":
+          {
+            if (msg.debug) {
+              console.log("[ReaderBridge] visibleTTSSegments debug:", JSON.stringify(msg.debug));
             }
-            break;
-          case "ttsSegmentContext":
-            {
-              const requestId = typeof msg.requestId === "string" ? msg.requestId : null;
-              const pendingResolve = requestId
-                ? pendingTTSContextResolveRef.current.get(requestId)
-                : pendingTTSContextResolveRef.current.values().next().value;
-              if (pendingResolve) {
-                if (msg.error) {
-                  console.warn("[ReaderBridge] ttsSegmentContext error:", msg.error);
-                }
-                pendingResolve({
-                  before: msg.before || [],
-                  after: msg.after || [],
-                });
-                if (requestId) {
-                  pendingTTSContextResolveRef.current.delete(requestId);
-                } else {
-                  pendingTTSContextResolveRef.current.clear();
-                }
-              }
-            }
-            break;
-          case "hrefTTSSegments":
-            {
-              const requestId = typeof msg.requestId === "string" ? msg.requestId : null;
-              const pendingResolve = requestId
-                ? pendingHrefTTSSegmentsResolveRef.current.get(requestId)
-                : pendingHrefTTSSegmentsResolveRef.current.values().next().value;
-              if (pendingResolve) {
-                if (msg.error) {
-                  console.warn("[ReaderBridge] hrefTTSSegments error:", msg.error);
-                }
-                pendingResolve(msg.segments || []);
-                if (requestId) {
-                  pendingHrefTTSSegmentsResolveRef.current.delete(requestId);
-                } else {
-                  pendingHrefTTSSegmentsResolveRef.current.clear();
-                }
-              }
-            }
-            break;
-          case "sectionTTSSegments":
-            {
-              const requestId = typeof msg.requestId === "string" ? msg.requestId : null;
-              const pendingResolve = requestId
-                ? pendingSectionTTSSegmentsResolveRef.current.get(requestId)
-                : pendingSectionTTSSegmentsResolveRef.current.values().next().value;
-              if (pendingResolve) {
-                if (msg.error) {
-                  console.warn("[ReaderBridge] sectionTTSSegments error:", msg.error);
-                }
-                pendingResolve(msg.segments || []);
-                if (requestId) {
-                  pendingSectionTTSSegmentsResolveRef.current.delete(requestId);
-                } else {
-                  pendingSectionTTSSegmentsResolveRef.current.clear();
-                }
-              }
-            }
-            break;
-          case "chapterParagraphs":
-            console.log(
-              "[ChapterTranslation] Received chapterParagraphs:",
-              JSON.stringify({
-                count: msg.paragraphs?.length || 0,
-                error: msg.error || "none",
-              }),
-            );
-            if (pendingChapterParagraphsResolveRef.current) {
+            const requestId = typeof msg.requestId === "string" ? msg.requestId : null;
+            const pendingResolve = requestId
+              ? pendingVisibleTTSSegmentsResolveRef.current.get(requestId)
+              : pendingVisibleTTSSegmentsResolveRef.current.values().next().value;
+            if (pendingResolve) {
               if (msg.error) {
-                console.warn("[ChapterTranslation] WebView error:", msg.error);
+                console.warn("[ReaderBridge] visibleTTSSegments error:", msg.error);
               }
-              pendingChapterParagraphsResolveRef.current(msg.paragraphs || []);
-              pendingChapterParagraphsResolveRef.current = null;
-            } else {
-              console.warn(
-                "[ChapterTranslation] No pending resolve for chapterParagraphs (timed out?)",
-              );
-            }
-            break;
-          case "chapterTranslationsInjected":
-            {
-              const requestId = typeof msg.requestId === "string" ? msg.requestId : null;
-              const pendingResolve = requestId
-                ? pendingChapterTranslationInjectionResolveRef.current.get(requestId)
-                : pendingChapterTranslationInjectionResolveRef.current.values().next().value;
-              if (pendingResolve) {
-                if (msg.error) {
-                  console.warn("[ChapterTranslation] WebView injection error:", msg.error);
-                }
-                pendingResolve();
-                if (requestId) {
-                  pendingChapterTranslationInjectionResolveRef.current.delete(requestId);
-                } else {
-                  pendingChapterTranslationInjectionResolveRef.current.clear();
-                }
+              pendingResolve(msg.segments || []);
+              if (requestId) {
+                pendingVisibleTTSSegmentsResolveRef.current.delete(requestId);
+              } else {
+                pendingVisibleTTSSegmentsResolveRef.current.clear();
               }
             }
-            break;
-          case "debug":
-            console.log("[WebView]", msg.message);
-            break;
-          default:
-            break;
-        }
-      } catch (err) {
-        console.error("[ReaderBridge] Parse error:", err);
+          }
+          break;
+        case "ttsSegmentContext":
+          {
+            const requestId = typeof msg.requestId === "string" ? msg.requestId : null;
+            const pendingResolve = requestId
+              ? pendingTTSContextResolveRef.current.get(requestId)
+              : pendingTTSContextResolveRef.current.values().next().value;
+            if (pendingResolve) {
+              if (msg.error) {
+                console.warn("[ReaderBridge] ttsSegmentContext error:", msg.error);
+              }
+              pendingResolve({
+                before: msg.before || [],
+                after: msg.after || [],
+              });
+              if (requestId) {
+                pendingTTSContextResolveRef.current.delete(requestId);
+              } else {
+                pendingTTSContextResolveRef.current.clear();
+              }
+            }
+          }
+          break;
+        case "hrefTTSSegments":
+          {
+            const requestId = typeof msg.requestId === "string" ? msg.requestId : null;
+            const pendingResolve = requestId
+              ? pendingHrefTTSSegmentsResolveRef.current.get(requestId)
+              : pendingHrefTTSSegmentsResolveRef.current.values().next().value;
+            if (pendingResolve) {
+              if (msg.error) {
+                console.warn("[ReaderBridge] hrefTTSSegments error:", msg.error);
+              }
+              pendingResolve(msg.segments || []);
+              if (requestId) {
+                pendingHrefTTSSegmentsResolveRef.current.delete(requestId);
+              } else {
+                pendingHrefTTSSegmentsResolveRef.current.clear();
+              }
+            }
+          }
+          break;
+        case "sectionTTSSegments":
+          {
+            const requestId = typeof msg.requestId === "string" ? msg.requestId : null;
+            const pendingResolve = requestId
+              ? pendingSectionTTSSegmentsResolveRef.current.get(requestId)
+              : pendingSectionTTSSegmentsResolveRef.current.values().next().value;
+            if (pendingResolve) {
+              if (msg.error) {
+                console.warn("[ReaderBridge] sectionTTSSegments error:", msg.error);
+              }
+              pendingResolve(msg.segments || []);
+              if (requestId) {
+                pendingSectionTTSSegmentsResolveRef.current.delete(requestId);
+              } else {
+                pendingSectionTTSSegmentsResolveRef.current.clear();
+              }
+            }
+          }
+          break;
+        case "chapterParagraphs":
+          console.log(
+            "[ChapterTranslation] Received chapterParagraphs:",
+            JSON.stringify({
+              count: msg.paragraphs?.length || 0,
+              error: msg.error || "none",
+            }),
+          );
+          if (pendingChapterParagraphsResolveRef.current) {
+            if (msg.error) {
+              console.warn("[ChapterTranslation] WebView error:", msg.error);
+            }
+            pendingChapterParagraphsResolveRef.current(msg.paragraphs || []);
+            pendingChapterParagraphsResolveRef.current = null;
+          } else {
+            console.warn(
+              "[ChapterTranslation] No pending resolve for chapterParagraphs (timed out?)",
+            );
+          }
+          break;
+        case "chapterTranslationsInjected":
+          {
+            const requestId = typeof msg.requestId === "string" ? msg.requestId : null;
+            const pendingResolve = requestId
+              ? pendingChapterTranslationInjectionResolveRef.current.get(requestId)
+              : pendingChapterTranslationInjectionResolveRef.current.values().next().value;
+            if (pendingResolve) {
+              if (msg.error) {
+                console.warn("[ChapterTranslation] WebView injection error:", msg.error);
+              }
+              pendingResolve();
+              if (requestId) {
+                pendingChapterTranslationInjectionResolveRef.current.delete(requestId);
+              } else {
+                pendingChapterTranslationInjectionResolveRef.current.clear();
+              }
+            }
+          }
+          break;
+        case "debug":
+          console.log("[WebView]", msg.message);
+          break;
+        default:
+          break;
       }
-    },
-    [],
-  );
+    } catch (err) {
+      console.error("[ReaderBridge] Parse error:", err);
+    }
+  }, []);
 
   return useMemo(
     () => ({
