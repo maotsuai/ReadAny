@@ -50,6 +50,7 @@ export interface ReaderInitialSettings {
   paragraphSpacing?: number;
   pageMargin?: number;
   fontTheme?: string;
+  useBookFonts?: boolean;
   viewMode?: "paginated" | "scroll";
   paginatedLayout?: "single" | "double";
 }
@@ -268,6 +269,7 @@ export function useReaderBridge(callbacks: ReaderBridgeCallbacks) {
       paragraphSpacing?: number;
       pageMargin?: number;
       fontTheme?: string;
+      useBookFonts?: boolean;
       viewMode?: string;
       paginatedLayout?: "single" | "double";
       customFontFaceCSS?: string;
