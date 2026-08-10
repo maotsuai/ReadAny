@@ -202,6 +202,7 @@
     let currentFontTheme = 'default';
     let currentCustomFontFaceCSS = '';
     let currentCustomFontFamily = '';
+    let currentUseBookFonts = true;
     let tapNavigationInFlight = false;
     let tapNavigationResetTimer = null;
     let readerElement = null;
@@ -1079,12 +1080,27 @@
       return String(cloned.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 600);
     }
 
+    // Well-formed books put the footnote id on a block container (<aside>),
+    // but many real-world books put it on the inline marker itself ("[2]")
+    // whose parent block carries the actual note. Walk up while a node's own
+    // (marker-stripped) text is empty and return the first ancestor that
+    // yields note text - no tag-name or length heuristics.
+    function findFootnotePreviewElement(element) {
+      var doc = element.ownerDocument;
+      var node = element;
+      while (node && node !== doc.body) {
+        if (getFootnoteElementText(node).trim()) return node;
+        node = node.parentElement;
+      }
+      return element;
+    }
+
     async function resolveFootnoteTipText(anchor, href) {
       const rawHref = anchor?.getAttribute?.('href') || href || '';
       const sourceDoc = anchor?.ownerDocument;
       const localTarget = findElementByFragmentId(sourceDoc, getHrefFragmentId(rawHref));
       if (localTarget && (isFootnoteLikeElement(localTarget) || isLikelyFootnoteLink(anchor, href))) {
-        return getFootnoteElementText(localTarget);
+        return getFootnoteElementText(findFootnotePreviewElement(localTarget));
       }
 
       if (!view || !href) return '';
@@ -1104,7 +1120,10 @@
             : null);
         if (!targetDoc) return '';
         const target = typeof resolved.anchor === 'function' ? resolved.anchor(targetDoc) : null;
-        return getFootnoteElementText(target);
+        if (!target) return '';
+        return getFootnoteElementText(
+          target && target.nodeType === 1 ? findFootnotePreviewElement(target) : target,
+        );
       } catch {
         return '';
       }
@@ -1644,12 +1663,14 @@
             .then((text) => {
               if (!text) {
                 hideFootnoteTip();
+                // Fallback: navigate to the footnote instead of a dead click.
+                if (href && typeof view.goTo === 'function') view.goTo(href);
                 return;
               }
               activeFootnoteTipKey = key;
               if (!positionFootnoteTip(anchor, text)) hideFootnoteTip();
             })
-            .catch(() => hideFootnoteTip());
+            .catch(() => { hideFootnoteTip(); if (href && typeof view.goTo === 'function') view.goTo(href); });
         });
 
         container.appendChild(el);
@@ -1777,6 +1798,9 @@
       if (settings.customFontFamily !== undefined) {
         currentCustomFontFamily = settings.customFontFamily || '';
       }
+      if (settings.useBookFonts !== undefined) {
+        currentUseBookFonts = settings.useBookFonts !== false;
+      }
 
       if (settings.fontSize !== undefined) {
         currentFontSize = settings.fontSize;
@@ -1796,7 +1820,7 @@
       }
 
       if (settings.fontSize !== undefined || settings.lineHeight !== undefined || settings.fontTheme !== undefined || settings.paragraphSpacing !== undefined
-          || settings.customFontFamily !== undefined || settings.customFontFaceCSS !== undefined) {
+          || settings.customFontFamily !== undefined || settings.customFontFaceCSS !== undefined || settings.useBookFonts !== undefined) {
         const fontThemes = {
           default: { cjk: '-apple-system, BlinkMacSystemFont, system-ui, sans-serif', serif: '-apple-system, BlinkMacSystemFont, system-ui, sans-serif' },
           system: { cjk: '-apple-system, BlinkMacSystemFont, system-ui, sans-serif', serif: '-apple-system, BlinkMacSystemFont, system-ui, sans-serif' },
@@ -1828,6 +1852,15 @@
         const layoutScale = currentFontSize / BASELINE_FONT_SIZE;
         const ps = Math.round(currentParagraphSpacing * layoutScale);
 
+        // When useBookFonts is enabled (default), do not force the reader
+        // font family onto every element so the book's own fonts (e.g.
+        // embedded @font-face families) render where the book specifies them.
+        const bodyStarFontOverride = currentUseBookFonts
+          ? ''
+          : `:root:not(.vrtl):not(.vltr) body *:not(svg):not(svg *):not(math):not(math *):not(pre):not(pre *):not(code):not(code *):not(kbd):not(kbd *):not(samp):not(samp *) {
+  font-family: var(--readany-font-family) !important;
+}`;
+
         const baseStyles = `
           :root {
             --readany-font-family: ${fontFamily};
@@ -1839,9 +1872,7 @@
             -webkit-text-size-adjust: none;
             text-size-adjust: none;
           }
-          :root:not(.vrtl):not(.vltr) body *:not(svg):not(svg *):not(math):not(math *):not(pre):not(pre *):not(code):not(code *):not(kbd):not(kbd *):not(samp):not(samp *) {
-            font-family: var(--readany-font-family) !important;
-          }
+          ${bodyStarFontOverride}
           :root:not(.vrtl):not(.vltr) body *:not(svg):not(svg *):not(math):not(math *):not(pre):not(pre *):not(code):not(code *):not(kbd):not(kbd *):not(samp):not(samp *):not(rt):not(rp) {
             font-size: ${fSize}px !important;
           }
@@ -1884,7 +1915,10 @@
           :root:not(.vrtl):not(.vltr) img,
           :root:not(.vrtl):not(.vltr) svg {
             max-width: 100% !important;
-            height: auto !important;
+          }
+          img,
+          svg {
+            height: auto;
           }
           ${getVerticalWritingCompatibilityStyles()}
         `;
@@ -2209,8 +2243,6 @@ a { color: ${primary} !important; }
       const verticalDoc = isVerticalDoc(doc);
       if (!verticalDoc) {
         for (const img of doc.querySelectorAll('img')) {
-          img.style.maxWidth = '100%';
-          img.style.height = 'auto';
           img.style.webkitUserDrag = 'none';
           img.style.touchAction = 'manipulation';
         }
