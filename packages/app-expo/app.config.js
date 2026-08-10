@@ -4,6 +4,7 @@ const variant = getAppVariantConfig();
 
 module.exports = {
   expo: {
+    owner: "nyansippys-team",
     name: variant.name,
     slug: "readany",
     version: "1.3.6",
@@ -89,7 +90,7 @@ module.exports = {
     extra: {
       appVariant: variant.key,
       eas: {
-        projectId: "e9c65825-d965-4d58-a3af-46406ee8a9ae",
+        projectId: "093ea8b0-a848-4341-b7e1-7dcd711b540e",
       },
     },
   },
