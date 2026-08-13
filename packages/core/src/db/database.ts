@@ -106,6 +106,9 @@ export {
   getChunkOutlines,
   insertChunks,
   deleteChunks,
+  getVectorIndexProvenance,
+  setVectorIndexProvenance,
+  deleteVectorIndexProvenance,
   clearVectorizationFlagsWithoutLocalChunks,
 } from "./chunk-queries";
 export type { ChunkOutline } from "./chunk-queries";

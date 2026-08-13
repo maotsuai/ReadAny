@@ -192,6 +192,8 @@
     let currentSectionIndex = 0;
     let totalSections = 0;
     let currentThemeColors = { bg: '#1c1c1e', fg: '#e8e8ed', muted: '#7c7c82', primary: '#3b82f6' };
+    let currentThemeMode = 'light';
+    let currentBookIsPdf = false;
     let lastRendererStyles = '';
     let currentViewMode = 'paginated';
     let currentSectionUsesVerticalWriting = false;
@@ -1350,7 +1352,7 @@
           await clearTTSHighlight();
           break;
         case 'setThemeColors':
-          if (msg.colors) setThemeColors(msg.colors);
+          if (msg.colors) setThemeColors(msg.colors, msg.themeMode);
           break;
         case 'extractChapters':
           await handleExtractChapters();
@@ -1378,6 +1380,9 @@
     async function openBook(msg) {
       const container = document.getElementById('reader-container');
       const loading = document.getElementById('loading');
+      currentBookIsPdf = isPDFBookMessage(msg);
+      pdfPageLightCache = {};
+      pdfDocIndexMap = new WeakMap();
       bookTextMetricsJobId += 1;
       if (bookTextMetricsTimer) {
         clearTimeout(bookTextMetricsTimer);
@@ -1517,6 +1522,10 @@
             applyRendererFlowMode(el.renderer);
           }
           applyDocStyles(doc);
+          if (currentBookIsPdf && typeof index === 'number') {
+            pdfDocIndexMap.set(doc, index);
+            applyPdfPageThemeFilter(doc, index);
+          }
           attachTapListener(doc);
           attachPullBookmarkListener(doc);
           attachSelectionListener(doc);
@@ -1789,6 +1798,19 @@
     function applySettings(settings) {
       if (!view || !view.renderer) return;
       const renderer = view.renderer;
+      // PDF pages are fixed-layout canvases. Reader font, line-height, custom
+      // font and paragraph-spacing rules would move the transparent text layer
+      // away from the canvas and render a second, misaligned copy of the text.
+      if (currentBookIsPdf) {
+        if (settings.paginatedLayout !== undefined) {
+          currentPaginatedLayout =
+            settings.paginatedLayout === 'single' ? 'single' : 'double';
+        }
+        if (view.isFixedLayout) {
+          applyFixedLayoutRendererSettings(renderer, currentPaginatedLayout);
+        }
+        return;
+      }
 
       // Update custom font state
       if (settings.customFontFaceCSS !== undefined) {
@@ -2065,13 +2087,15 @@
       syncCustomFontStylesForAllDocs(css);
     }
 
-    function setThemeColors(colors) {
+    function setThemeColors(colors, themeMode) {
       const bg = colors.background || '#1c1c1e';
       const fg = colors.foreground || '#e8e8ed';
       const muted = colors.muted || '#7c7c82';
       const primary = colors.primary || '#3b82f6';
 
       currentThemeColors = { bg, fg, muted, primary };
+      if (themeMode === 'dark' || themeMode === 'sepia') currentThemeMode = themeMode;
+      else currentThemeMode = 'light';
 
       document.documentElement.style.setProperty('--bg', bg);
       document.documentElement.style.setProperty('--fg', fg);
@@ -2081,14 +2105,126 @@
       document.body.style.color = fg;
 
       if (view && view.renderer && view.renderer.setStyles) {
-        const currentStyles = lastRendererStyles || '';
-        const themedStyles = injectThemeIntoStyles(currentStyles, bg, fg, primary);
-        view.renderer.setStyles(themedStyles);
-        syncReaderOverrideStylesForAllDocs(themedStyles);
+        if (currentBookIsPdf) {
+          view.renderer.setStyles(`
+            html, body { background-color: ${bg} !important; }
+            .textLayer span, .textLayer br { color: transparent !important; }
+          `);
+        } else {
+          const currentStyles = lastRendererStyles || '';
+          const themedStyles = injectThemeIntoStyles(currentStyles, bg, fg, primary);
+          view.renderer.setStyles(themedStyles);
+          syncReaderOverrideStylesForAllDocs(themedStyles);
+        }
       }
 
       if (view && view.setSearchIndicator) {
         view.setSearchIndicator('outline', { color: primary });
+      }
+
+      reapplyPdfThemeFilters();
+    }
+
+    // ─── PDF theme inversion (dark/sepia) with per-page smart skip ───
+    var PDF_THEME_FILTERS = {
+      // Mobile dark theme uses #1c1c1e. Mapping white with invert(0.89)
+      // produces approximately #1c1c1c, avoiding a visible page/shell seam.
+      dark: 'invert(0.89)',
+      // Numerically tuned (invert->sepia->contrast->brightness) so a white PDF
+      // page maps almost exactly to the sepia background #f0e6d2 (rgb 240,230,210).
+      sepia: 'invert(0.245) sepia(0.286) contrast(1.328) brightness(1.005)',
+    };
+    var pdfPageLightCache = {};
+    var pdfDocIndexMap = new WeakMap();
+
+    function analyzeCanvasIsLight(canvas) {
+      var size = 48;
+      var out = document.createElement('canvas');
+      out.width = size;
+      out.height = size;
+      var ctx = out.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return true;
+      try {
+        ctx.drawImage(canvas, 0, 0, size, size);
+        var data = ctx.getImageData(0, 0, size, size).data;
+        var light = 0;
+        for (var i = 0; i < data.length; i += 4) {
+          var lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+          if (lum > 200) light++;
+        }
+        // A text page is predominantly light; downsampling washes thin text
+        // into gray, so only rely on how much of the page is clearly light.
+        return light / (size * size) > 0.55;
+      } catch (e) {
+        return true;
+      }
+    }
+
+    function waitForPdfPageCanvas(doc, timeoutMs) {
+      timeoutMs = timeoutMs || 5000;
+      return new Promise(function (resolve) {
+        var win = doc.defaultView || window;
+        var raf = typeof win.requestAnimationFrame === 'function'
+          ? win.requestAnimationFrame.bind(win)
+          : function (cb) { setTimeout(function () { cb(performance.now()); }, 50); };
+        var start = performance.now();
+        var check = function () {
+          var canvas = doc.querySelector('#canvas canvas');
+          if (canvas && canvas.width > 0 && canvas.height > 0) { resolve(canvas); return; }
+          if (performance.now() - start > timeoutMs) { resolve(null); return; }
+          raf(check);
+        };
+        check();
+      });
+    }
+
+    function applyPdfPageThemeFilter(doc, index) {
+      var filter = PDF_THEME_FILTERS[currentThemeMode];
+      var iframe = doc.defaultView ? doc.defaultView.frameElement : null;
+      if (!iframe) return;
+      iframe.style.filter = '';
+      iframe.style.backgroundColor = currentThemeColors.bg;
+      doc.documentElement.style.backgroundColor = currentThemeColors.bg;
+      if (doc.body) doc.body.style.backgroundColor = currentThemeColors.bg;
+      if (!filter) {
+        doc.documentElement.style.setProperty('--readany-pdf-filter', 'none');
+        return;
+      }
+      var isLight = pdfPageLightCache[index];
+      if (isLight === undefined) {
+        waitForPdfPageCanvas(doc).then(function (canvas) {
+          var light = canvas ? analyzeCanvasIsLight(canvas) : true;
+          pdfPageLightCache[index] = light;
+          doc.documentElement.style.setProperty('--readany-pdf-filter', light ? filter : 'none');
+        });
+        return;
+      }
+      doc.documentElement.style.setProperty('--readany-pdf-filter', isLight ? filter : 'none');
+    }
+
+    function reapplyPdfThemeFilters() {
+      if (!currentBookIsPdf) return;
+      var filter = PDF_THEME_FILTERS[currentThemeMode];
+      var contents = getRendererContents();
+      for (var i = 0; i < contents.length; i++) {
+        var doc = contents[i] && contents[i].doc;
+        var iframe = doc && doc.defaultView ? doc.defaultView.frameElement : null;
+        if (!doc || !iframe) continue;
+        var index = pdfDocIndexMap.get(doc);
+        if (index === undefined) continue;
+        iframe.style.filter = '';
+        iframe.style.backgroundColor = currentThemeColors.bg;
+        doc.documentElement.style.backgroundColor = currentThemeColors.bg;
+        if (doc.body) doc.body.style.backgroundColor = currentThemeColors.bg;
+        if (!filter) {
+          doc.documentElement.style.setProperty('--readany-pdf-filter', 'none');
+          continue;
+        }
+        var isLight = pdfPageLightCache[index];
+        doc.documentElement.style.setProperty(
+          '--readany-pdf-filter',
+          isLight === false ? 'none' : filter,
+        );
       }
     }
 
@@ -2239,6 +2375,20 @@ a { color: ${primary} !important; }
     }
 
     function applyDocStyles(doc) {
+      if (currentBookIsPdf) {
+        const styleId = '__readany_pdf_styles__';
+        let style = doc.getElementById(styleId);
+        if (!style) {
+          style = doc.createElement('style');
+          style.id = styleId;
+          doc.head.appendChild(style);
+        }
+        style.textContent = `
+          html, body { background-color: ${currentThemeColors.bg} !important; }
+          .textLayer span, .textLayer br { color: transparent !important; }
+        `;
+        return;
+      }
       syncCustomFontStylesForDoc(doc, currentCustomFontFaceCSS);
       const verticalDoc = isVerticalDoc(doc);
       if (!verticalDoc) {

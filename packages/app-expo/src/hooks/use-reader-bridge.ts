@@ -282,8 +282,14 @@ export function useReaderBridge(callbacks: ReaderBridgeCallbacks) {
   );
 
   const setThemeColors = useCallback(
-    (colors: { background: string; foreground: string; muted: string; primary?: string }) => {
-      const msg = JSON.stringify({ type: "setThemeColors", colors });
+    (colors: {
+      background: string;
+      foreground: string;
+      muted: string;
+      primary?: string;
+      themeMode?: "light" | "dark" | "sepia";
+    }) => {
+      const msg = JSON.stringify({ type: "setThemeColors", colors, themeMode: colors.themeMode });
       inject(`handleCommand(${msg})`);
     },
     [inject],

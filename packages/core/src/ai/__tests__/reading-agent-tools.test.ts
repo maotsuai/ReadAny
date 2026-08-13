@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AIConfig } from "../../types";
-import { streamReadingAgent } from "../agents/reading-agent";
+import type { AIConfig, ReadingContext } from "../../types";
+import { isOutputLimitTermination, streamReadingAgent } from "../agents/reading-agent";
 import type { ToolDefinition } from "../tools";
 import { getAvailableTools } from "../tools";
 
@@ -16,7 +16,9 @@ vi.mock("../llm-provider", () => ({
   })),
 }));
 
-const getReadingContextSnapshotMock = vi.hoisted(() => vi.fn(() => null));
+const getReadingContextSnapshotMock = vi.hoisted(() =>
+  vi.fn<() => ReadingContext | null>(() => null),
+);
 
 vi.mock("../reading-context-service", () => ({
   getReadingContextSnapshot: getReadingContextSnapshotMock,
@@ -50,7 +52,47 @@ beforeEach(() => {
   vi.useRealTimers();
 });
 
+describe("isOutputLimitTermination", () => {
+  it.each([
+    { response_metadata: { finish_reason: "length" } },
+    { response_metadata: { finishReason: "max_tokens" } },
+    { additional_kwargs: { finish_reason: "MAX_COMPLETION_TOKENS" } },
+  ])("recognizes explicit output-limit finish reasons", (output) => {
+    expect(isOutputLimitTermination(output)).toBe(true);
+  });
+
+  it("does not guess from normal completion metadata", () => {
+    expect(isOutputLimitTermination({ response_metadata: { finish_reason: "stop" } })).toBe(false);
+    expect(isOutputLimitTermination({ additional_kwargs: { finish_reason: "tool_calls" } })).toBe(
+      false,
+    );
+    expect(isOutputLimitTermination(undefined)).toBe(false);
+  });
+});
+
 describe("streamReadingAgent tool registration", () => {
+  it("returns a friendly message without calling the model for oversized input", async () => {
+    const events = [];
+
+    for await (const event of streamReadingAgent(
+      {
+        aiConfig: makeAIConfig(),
+        book: null,
+        bookId: "book-1",
+        semanticContext: null,
+        enabledSkills: [],
+        isVectorized: false,
+        getAvailableTools,
+      },
+      "a".repeat(32_001),
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([{ type: "token", content: "内容过长，请分段提问。" }]);
+    expect(createReactAgentMock).not.toHaveBeenCalled();
+  });
+
   it("registers fallback tools when only bookId is available", async () => {
     createReactAgentMock.mockReturnValue({
       streamEvents: vi.fn(() => ({

@@ -34,8 +34,8 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { FallbackContentProvider } from "@/components/rag/FallbackContentProvider";
 import { AnimatedSplash } from "@/components/splash/AnimatedSplash";
 import { rnSessionEventSource } from "@/hooks";
-import { readingContextService } from "@readany/core/ai/reading-context-service";
 import { setStreamingFetch } from "@readany/core/ai/llm-provider";
+import { readingContextService } from "@readany/core/ai/reading-context-service";
 import { initDatabase } from "@readany/core/db/database";
 import { installFeedbackLogCapture, setFeedbackWorkerUrl } from "@readany/core/feedback";
 import { setSessionEventSource } from "@readany/core/hooks/use-reading-session";
@@ -56,6 +56,7 @@ import { UpdateDialog } from "@/components/update/UpdateDialog";
 import { useUpdateChecker } from "@/hooks/use-update-checker";
 import { navigationRef } from "@/lib/navigationRef";
 import { ExpoPlatformService } from "@/lib/platform/expo-platform-service";
+import { subscribeRagSearchConfiguration } from "@/lib/rag/configure-search";
 import { MobileSyncAdapter } from "@/lib/sync/sync-adapter-mobile";
 import { RootNavigator } from "@/navigation/RootNavigator";
 import { useLibraryStore } from "@/stores/library-store";
@@ -89,11 +90,18 @@ export default function App() {
   const [bootError, setBootError] = useState<string | null>(null);
 
   useEffect(() => {
+    let unsubscribeRagSearch: (() => void) | undefined;
+
     async function bootstrap() {
       try {
         console.log("[App] bootstrap: register platform service");
         const platform = new ExpoPlatformService();
         setPlatformService(platform);
+
+        // Vectorization and Reader Agent queries use separate core paths.
+        // Synchronize the query-side service immediately and after settings
+        // hydration/changes so remote semantic search works on mobile too.
+        unsubscribeRagSearch = await subscribeRagSearchConfiguration();
 
         console.log("[App] bootstrap: register sync adapter");
         setSyncAdapter(new MobileSyncAdapter());
@@ -197,6 +205,7 @@ export default function App() {
       }
     }
     bootstrap();
+    return () => unsubscribeRagSearch?.();
   }, []);
 
   const handleSplashFinish = useCallback(() => {

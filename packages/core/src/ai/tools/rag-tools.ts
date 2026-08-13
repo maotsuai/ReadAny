@@ -340,6 +340,12 @@ export function createRagSearchTool(bookId: string): ToolDefinition {
         returnedResults: truncatedResults.length,
         totalTokens,
         tokenBudget: MAX_TOTAL_TOKENS,
+        ...(results[0]?.vectorStatus
+          ? {
+              vectorStatus: results[0].vectorStatus,
+              vectorError: results[0].vectorError,
+            }
+          : {}),
       };
     },
   };
