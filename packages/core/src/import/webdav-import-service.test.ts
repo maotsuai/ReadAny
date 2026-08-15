@@ -113,7 +113,7 @@ describe("WebDavImportService request paths (issue #174)", () => {
   it("lists a path-bearing WebDAV URL without duplicating the pathname", async () => {
     const { requests } = installFetchCapture();
     const service = new WebDavImportService(
-      createSource({ url: "http://host:5005/home/Books", remoteRoot: "" }),
+      createSource({ url: "http://host:5005/home/Books", remoteRoot: "", allowInsecure: true }),
     );
 
     const listing = await service.list("/");
@@ -128,7 +128,7 @@ describe("WebDavImportService request paths (issue #174)", () => {
   it("downloads a file using the origin-based base url", async () => {
     const { requests } = installFetchCapture();
     const service = new WebDavImportService(
-      createSource({ url: "http://host:5005/home/Books", remoteRoot: "" }),
+      createSource({ url: "http://host:5005/home/Books", remoteRoot: "", allowInsecure: true }),
     );
 
     await service.downloadFile("/novel.epub");
@@ -143,7 +143,7 @@ describe("WebDavImportService request paths (issue #174)", () => {
   it("tests the connection against the resolved root prefix, not the bare origin root", async () => {
     const { requests } = installFetchCapture();
     const service = new WebDavImportService(
-      createSource({ url: "http://host:5005/home/Books", remoteRoot: "" }),
+      createSource({ url: "http://host:5005/home/Books", remoteRoot: "", allowInsecure: true }),
     );
 
     await service.testConnection();

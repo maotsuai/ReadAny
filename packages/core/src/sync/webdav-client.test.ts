@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type FetchOptions, type IPlatformService, setPlatformService } from "../services/platform";
-import { WebDavClient, sanitizeWebDavRemoteRoot } from "./webdav-client";
+import {
+  WebDavClient,
+  assertWebDavTransportAllowed,
+  sanitizeWebDavRemoteRoot,
+} from "./webdav-client";
 
 function installFetchStub(
   handler: (url: string, options?: FetchOptions) => Response | Promise<Response>,
@@ -211,5 +215,43 @@ describe("sanitizeWebDavRemoteRoot", () => {
 
   it("trims unsafe path noise without lowercasing user folders", () => {
     expect(sanitizeWebDavRemoteRoot(" /\u0000ReadAny//Sync/ ")).toBe("ReadAny/Sync");
+  });
+});
+
+describe("WebDAV insecure transport policy", () => {
+  afterEach(() => {
+    setPlatformService(null as unknown as IPlatformService);
+  });
+
+  it("allows HTTPS without the insecure opt-in", () => {
+    expect(() => assertWebDavTransportAllowed("https://dav.example.com", false)).not.toThrow();
+  });
+
+  it("allows explicit HTTP only with the insecure opt-in", () => {
+    expect(() => assertWebDavTransportAllowed("http://192.0.2.10:5245/dav", true)).not.toThrow();
+  });
+
+  it("keeps an explicitly allowed HTTP URL unchanged", async () => {
+    const calls: Array<{ url: string; allowInsecure?: boolean }> = [];
+    installFetchStub((url, options) => {
+      calls.push({ url, allowInsecure: options?.allowInsecure });
+      return new Response("hello", { status: 200 });
+    });
+
+    const client = new WebDavClient("http://192.0.2.10:5245/dav", "alice", "secret", true);
+    await client.getText("/hello.txt");
+
+    expect(calls).toEqual([
+      {
+        url: "http://192.0.2.10:5245/dav/hello.txt",
+        allowInsecure: true,
+      },
+    ]);
+  });
+
+  it("blocks HTTP before a request is sent when the opt-in is disabled", () => {
+    expect(() => new WebDavClient("http://192.0.2.10:5245/dav", "alice", "secret", false)).toThrow(
+      /HTTP/,
+    );
   });
 });

@@ -46,8 +46,9 @@ const COLOR_ROW_DIVIDER_WIDTH = 1;
 const GAP = 2;
 const SAFE_TOP = 14;
 const SAFE_BOTTOM = 20;
-const SELECTION_POPOVER_ABOVE_OFFSET = 14;
-const SELECTION_POPOVER_BELOW_OFFSET = 6;
+// Keep the action bar clear of the native selection handles. iOS handles extend
+// farther outside the selection rect than Android's, so it needs extra room.
+const SELECTION_HANDLE_CLEARANCE = Platform.OS === "ios" ? 24 : 16;
 
 interface Props {
   selection: SelectionEvent;
@@ -135,8 +136,8 @@ export function SelectionPopover({
     );
 
     let y: number;
-    const yAbove = selTop - popoverHeight + SELECTION_POPOVER_ABOVE_OFFSET;
-    const yBelow = selBottom + SELECTION_POPOVER_BELOW_OFFSET;
+    const yAbove = selTop - popoverHeight - SELECTION_HANDLE_CLEARANCE;
+    const yBelow = selBottom + SELECTION_HANDLE_CLEARANCE;
     const aboveValid = yAbove >= SAFE_TOP;
     const belowValid = yBelow + popoverHeight + POPOVER_MARGIN <= SCREEN_HEIGHT - SAFE_BOTTOM;
 
