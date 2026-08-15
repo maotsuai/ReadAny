@@ -37,7 +37,8 @@ describe("buildSystemPrompt citations", () => {
 
     expect(prompt).toContain("Fallback Source Requirements");
     expect(prompt).toContain("If the exact fallback result/chunk you cite has a non-empty cfi");
-    expect(prompt).toContain("Call addCitation before writing the final response body");
+    expect(prompt).toContain("If the result has no cfi, still call addCitation with an empty cfi");
+    expect(prompt).toContain("resolve the paragraph CFI");
     expect(prompt).toContain("Use [1], [2], [3] markers only after addCitation succeeds");
     expect(prompt).toContain("Never invent a CFI");
     expect(prompt).toContain("addCitation");
@@ -125,7 +126,29 @@ describe("buildSystemPrompt citations", () => {
     expect(prompt).toContain("- addCitation");
     expect(prompt).not.toContain("- getReadingProgress");
     expect(prompt).not.toContain("Get overall reading progress");
-    expect(prompt).not.toContain("- ragSearch");
+    expect(prompt).not.toContain("ragSearch");
+    expect(prompt).not.toContain("ragContext");
+    expect(prompt).not.toContain("fallbackSearch");
     expect(prompt).not.toContain("Semantic/keyword search across book content");
+  });
+
+  it("keeps workflow instructions aligned with library-only tools", () => {
+    const prompt = buildSystemPrompt({
+      book: makeBook(),
+      semanticContext: null,
+      enabledSkills: [],
+      isVectorized: true,
+      userLanguage: "en",
+      questionCategory: "library_request",
+      allowedToolNames: ["listBooks", "getReadingStats"],
+    });
+
+    expect(prompt).toContain("- listBooks");
+    expect(prompt).toContain("- getReadingStats");
+    expect(prompt).toContain("This turn does not expose book-content retrieval tools");
+    expect(prompt).not.toContain("ragSearch");
+    expect(prompt).not.toContain("fallbackSearch");
+    expect(prompt).not.toContain("addCitation");
+    expect(prompt).not.toContain("mindmap");
   });
 });
