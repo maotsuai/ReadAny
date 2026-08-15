@@ -1,0 +1,11 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["InsecureNetworkModule"],
+    "podspecPath": "ios/InsecureNetwork.podspec",
+    "swiftModuleName": "InsecureNetwork"
+  },
+  "android": {
+    "modules": ["expo.modules.insecurenetwork.InsecureNetworkModule"]
+  }
+}

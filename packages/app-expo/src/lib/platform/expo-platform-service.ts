@@ -27,6 +27,10 @@ import * as LegacyFS from "expo-file-system/legacy";
 import * as Network from "expo-network";
 import * as SecureStore from "expo-secure-store";
 import * as Sharing from "expo-sharing";
+import InsecureNetwork, {
+  type InsecureNetworkResponse,
+  isInsecureNetworkAvailable,
+} from "../../../modules/insecure-network";
 
 /** Simple KV storage keys tracking (SecureStore doesn't have getAllKeys) */
 const KV_KEYS_INDEX = "__readany_kv_keys__";
@@ -284,15 +288,24 @@ export class ExpoPlatformService implements IPlatformService {
   async fetch(url: string, options?: FetchOptions): Promise<Response> {
     const { allowInsecure, timeoutMs, responseType, onDownloadProgress, ...fetchOptions } =
       options ?? {};
-    const effectiveUrl = allowInsecure ? url.replace(/^https:\/\//i, "http://") : url;
+    assertTransportAllowed(url, allowInsecure ?? false);
     const method = fetchOptions?.method?.toUpperCase() || "GET";
 
     // Always use XHR for WebDAV to handle large binary files properly
     // React Native's fetch has issues with large arrayBuffer responses
     const resolvedResponseType = responseType ?? (method === "GET" ? "arraybuffer" : "text");
     const effectiveTimeoutMs = timeoutMs ?? (method === "GET" ? 120000 : 15000);
+    if (shouldUseInsecureNativeTransport(url, allowInsecure ?? false)) {
+      return this._fetchWithInsecureNative(
+        url,
+        fetchOptions,
+        resolvedResponseType,
+        effectiveTimeoutMs,
+        onDownloadProgress,
+      );
+    }
     return this._fetchWithXHR(
-      effectiveUrl,
+      url,
       fetchOptions,
       resolvedResponseType,
       effectiveTimeoutMs,
@@ -301,9 +314,23 @@ export class ExpoPlatformService implements IPlatformService {
   }
 
   async downloadFile(url: string, filePath: string, options?: FileTransferOptions): Promise<void> {
-    const effectiveUrl = options?.allowInsecure ? url.replace(/^https:\/\//i, "http://") : url;
+    const allowInsecure = options?.allowInsecure ?? false;
+    assertTransportAllowed(url, allowInsecure);
+    if (shouldUseInsecureNativeTransport(url, allowInsecure)) {
+      const result = await requireInsecureNetwork().downloadFile(
+        url,
+        filePath,
+        options?.headers ?? {},
+        300000,
+      );
+      assertSuccessfulFileTransfer("download", result);
+      const size = new File(filePath).size ?? 0;
+      options?.onProgress?.(size, size);
+      return;
+    }
+
     const task = LegacyFS.createDownloadResumable(
-      effectiveUrl,
+      url,
       filePath,
       {
         headers: options?.headers,
@@ -319,7 +346,7 @@ export class ExpoPlatformService implements IPlatformService {
 
     const result = await task.downloadAsync();
     if (!result) {
-      throw new Error(`File download cancelled: ${effectiveUrl}`);
+      throw new Error(`File download cancelled: ${url}`);
     }
     if (result.status < 200 || result.status >= 300) {
       throw new Error(`File download failed: ${result.status}`);
@@ -327,9 +354,24 @@ export class ExpoPlatformService implements IPlatformService {
   }
 
   async uploadFile(url: string, filePath: string, options?: FileTransferOptions): Promise<void> {
-    const effectiveUrl = options?.allowInsecure ? url.replace(/^https:\/\//i, "http://") : url;
+    const allowInsecure = options?.allowInsecure ?? false;
+    assertTransportAllowed(url, allowInsecure);
+    if (shouldUseInsecureNativeTransport(url, allowInsecure)) {
+      const result = await requireInsecureNetwork().uploadFile(
+        url,
+        filePath,
+        "PUT",
+        options?.headers ?? {},
+        300000,
+      );
+      assertSuccessfulFileTransfer("upload", result);
+      const size = new File(filePath).size ?? 0;
+      options?.onProgress?.(size, size);
+      return;
+    }
+
     const task = LegacyFS.createUploadTask(
-      effectiveUrl,
+      url,
       filePath,
       {
         headers: options?.headers,
@@ -344,11 +386,29 @@ export class ExpoPlatformService implements IPlatformService {
 
     const result = await task.uploadAsync();
     if (!result) {
-      throw new Error(`File upload cancelled: ${effectiveUrl}`);
+      throw new Error(`File upload cancelled: ${url}`);
     }
     if (result.status < 200 || result.status >= 300) {
       throw new Error(`File upload failed: ${result.status}`);
     }
+  }
+
+  private async _fetchWithInsecureNative(
+    url: string,
+    options: RequestInit,
+    responseType: "text" | "arraybuffer",
+    timeoutMs: number,
+    onDownloadProgress?: (loaded: number, total: number) => void,
+  ): Promise<Response> {
+    const bodyBase64 = await requestBodyToBase64(options.body);
+    const result = await requireInsecureNetwork().request(
+      url,
+      options.method?.toUpperCase() || "GET",
+      normalizeHeaders(options.headers),
+      bodyBase64,
+      timeoutMs,
+    );
+    return nativeResponseToFetchResponse(result, responseType, onDownloadProgress);
   }
 
   private _fetchWithXHR(
@@ -854,6 +914,112 @@ function base64ToBytes(base64: string): Uint8Array {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  const chunkSize = 0x8000;
+  const chunks: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + chunkSize)));
+  }
+  return btoa(chunks.join(""));
+}
+
+async function requestBodyToBase64(body: BodyInit | null | undefined): Promise<string | null> {
+  if (body == null) return null;
+
+  if (typeof body === "string") {
+    return bytesToBase64(new TextEncoder().encode(body));
+  }
+  if (body instanceof ArrayBuffer) {
+    return bytesToBase64(new Uint8Array(body));
+  }
+  if (ArrayBuffer.isView(body)) {
+    return bytesToBase64(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+  }
+  if (typeof Blob !== "undefined" && body instanceof Blob) {
+    return bytesToBase64(new Uint8Array(await body.arrayBuffer()));
+  }
+  if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) {
+    return bytesToBase64(new TextEncoder().encode(body.toString()));
+  }
+
+  throw new Error("The mobile insecure network transport does not support this request body type");
+}
+
+function normalizeHeaders(headers?: HeadersInit): Record<string, string> {
+  const result: Record<string, string> = {};
+  new Headers(headers).forEach((value, key) => {
+    result[key] = value;
+  });
+  return result;
+}
+
+function shouldUseInsecureNativeTransport(url: string, allowInsecure: boolean): boolean {
+  return allowInsecure && /^https:\/\//i.test(url) && isInsecureNetworkAvailable();
+}
+
+function requireInsecureNetwork() {
+  if (!InsecureNetwork) {
+    throw new Error(
+      "This mobile build does not include self-signed certificate support. Rebuild the native app and try again.",
+    );
+  }
+  return InsecureNetwork;
+}
+
+function assertTransportAllowed(url: string, allowInsecure: boolean): void {
+  if (/^http:\/\//i.test(url) && !allowInsecure) {
+    throw new Error(
+      i18n.t("settings.syncWebdavInsecureHttpBlocked", {
+        defaultValue: "该 WebDAV 地址使用 HTTP，请先开启允许不安全连接。",
+      }),
+    );
+  }
+}
+
+function assertSuccessfulFileTransfer(
+  operation: "download" | "upload",
+  result: InsecureNetworkResponse,
+): void {
+  if (result.status < 200 || result.status >= 300) {
+    throw new Error(`File ${operation} failed: ${result.status} ${result.statusText}`.trim());
+  }
+}
+
+function nativeResponseToFetchResponse(
+  result: InsecureNetworkResponse,
+  responseType: "text" | "arraybuffer",
+  onDownloadProgress?: (loaded: number, total: number) => void,
+): Response {
+  const bytes = result.bodyBase64 ? base64ToBytes(result.bodyBase64) : new Uint8Array();
+  const contentLength = Number(
+    Object.entries(result.headers).find(([key]) => key.toLowerCase() === "content-length")?.[1] ??
+      0,
+  );
+  onDownloadProgress?.(bytes.byteLength, Number.isFinite(contentLength) ? contentLength : 0);
+
+  let textResponse: string | null = null;
+  const readText = () => {
+    if (textResponse === null) {
+      textResponse = new TextDecoder().decode(bytes);
+    }
+    return textResponse;
+  };
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+
+  const response = {
+    status: result.status,
+    statusText: result.statusText,
+    ok: result.status >= 200 && result.status < 300,
+    headers: new Headers(result.headers),
+    text: async () => readText(),
+    json: async () => JSON.parse(readText()),
+    arrayBuffer: async () =>
+      responseType === "arraybuffer" ? buffer : new TextEncoder().encode(readText()).buffer,
+  } as Response;
+
+  return response;
 }
 
 /** Map book file extensions to MIME types for document picker */

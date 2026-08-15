@@ -26,6 +26,13 @@ module.exports = {
           "ReadAny uses the camera to scan sync and configuration QR codes.",
         NSLocalNetworkUsageDescription:
           "ReadAny uses the local network to connect to sync devices and the development server while debugging.",
+        // WebDAV endpoints are configured by the user and can be plain HTTP,
+        // including bare IP addresses. ATS domain exceptions cannot cover an
+        // arbitrary runtime host, so iOS must allow these requests globally.
+        // ReadAny only connects to the URL explicitly entered by the user.
+        NSAppTransportSecurity: {
+          NSAllowsArbitraryLoads: true,
+        },
         ITSAppUsesNonExemptEncryption: false,
       },
     },

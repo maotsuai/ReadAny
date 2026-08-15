@@ -31,6 +31,31 @@ export function sanitizeWebDavRemoteRoot(remoteRoot: string): string {
   return normalized;
 }
 
+/**
+ * Plain HTTP is an explicit opt-in. Keep this check in the shared WebDAV
+ * client so connection tests, sync, and remote-library imports all obey the
+ * same rule on every platform.
+ */
+export function assertWebDavTransportAllowed(url: string, allowInsecure: boolean): void {
+  let protocol: string;
+  try {
+    protocol = new URL(sanitizeWebDavUrl(url)).protocol.toLowerCase();
+  } catch {
+    // Preserve the existing invalid-URL error path from the platform client.
+    return;
+  }
+
+  if (protocol === "http:" && !allowInsecure) {
+    throw new WebDavError(
+      "insecure",
+      i18n.t("settings.syncWebdavInsecureHttpBlocked", {
+        defaultValue: "该 WebDAV 地址使用 HTTP，请先开启允许不安全连接。",
+      }),
+      { url: sanitizeWebDavUrl(url) },
+    );
+  }
+}
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 const TRANSFER_TIMEOUT_MS = 300_000;
 const DIRECTORY_PROBE_TIMEOUT_MS = 5_000;
@@ -46,6 +71,7 @@ const RETRY_MAX_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 500;
 
 type WebDavErrorKind =
+  | "insecure"
   | "auth"
   | "forbidden"
   | "not-found"
@@ -257,6 +283,8 @@ export class WebDavClient {
   constructor(url: string, username: string, password: string, allowInsecure?: boolean) {
     // Normalize: remove control chars/whitespace and trailing slash
     this.baseUrl = sanitizeWebDavUrl(url);
+    this.allowInsecure = allowInsecure ?? false;
+    assertWebDavTransportAllowed(this.baseUrl, this.allowInsecure);
     // Basic auth header
     const credentials = `${username}:${password}`;
     // Use UTF-8 safe base64 encoding; btoa is unreliable in React Native/Android.
@@ -266,7 +294,6 @@ export class WebDavClient {
       username: username.length > 2 ? `${username[0]}***${username[username.length - 1]}` : "***",
       passwordLength: password.length,
     });
-    this.allowInsecure = allowInsecure ?? false;
   }
 
   private getTimeout(method: string, explicitTimeoutMs?: number): number {
