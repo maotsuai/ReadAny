@@ -1,0 +1,117 @@
+name: Build Unsigned iOS IPA
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and upload the IPA to"
+        required: true
+        default: "v1.3.6"
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  build-ios-unsigned:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build reader assets
+        run: pnpm --filter @readany/app-expo run build:reader
+
+      - name: Install iOS native build tools
+        working-directory: packages/app-expo
+        env:
+          EAS_BUILD_PLATFORM: ios
+        run: bash scripts/eas-install-ios-build-tools.sh
+
+      - name: Generate iOS native project
+        working-directory: packages/app-expo
+        env:
+          APP_VARIANT: production
+          CI: "1"
+        run: |
+          pnpm exec expo prebuild --platform ios --clean --no-install
+          node scripts/configure-native-variant.js
+          pod install --project-directory=ios
+
+      - name: Build unsigned iPhone app
+        working-directory: packages/app-expo
+        env:
+          APP_VARIANT: production
+          RCT_NO_LAUNCH_PACKAGER: "1"
+        run: |
+          xcodebuild \
+            -workspace ios/ReadAny.xcworkspace \
+            -scheme ReadAny \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath ios/build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            clean build
+
+      - name: Package unsigned IPA
+        working-directory: packages/app-expo
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          APP_PATH=$(find ios/build/Build/Products/Release-iphoneos -maxdepth 1 -type d -name "*.app" -print -quit)
+          if [ -z "$APP_PATH" ]; then
+            echo "Unsigned iPhone .app was not produced"
+            exit 1
+          fi
+
+          if codesign --verify "$APP_PATH" >/dev/null 2>&1; then
+            echo "Expected an unsigned app, but a code signature was found"
+            exit 1
+          fi
+
+          mkdir -p ipa/Payload
+          cp -R "$APP_PATH" ipa/Payload/
+          (
+            cd ipa
+            ditto -c -k --sequesterRsrc --keepParent Payload "../../../ReadAny-${VERSION}-unsigned.ipa"
+          )
+
+      - name: Upload IPA to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          for attempt in {1..60}; do
+            if gh release view "$RELEASE_TAG" --json tagName --jq '.tagName' >/dev/null 2>&1; then
+              gh release upload "$RELEASE_TAG" "ReadAny-${VERSION}-unsigned.ipa" --clobber
+              exit 0
+            fi
+            echo "Waiting for release $RELEASE_TAG to be created..."
+            sleep 10
+          done
+          echo "Release $RELEASE_TAG was not found"
+          exit 1
