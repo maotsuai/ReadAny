@@ -6,7 +6,7 @@ module.exports = {
   expo: {
     name: variant.name,
     slug: "readany",
-    version: "1.3.5",
+    version: "1.3.6",
     orientation: "portrait",
     icon: "./assets/icon.png",
     userInterfaceStyle: "automatic",
@@ -74,6 +74,7 @@ module.exports = {
           },
         },
       ],
+      "./plugins/withGradleMemory",
       "expo-font",
       [
         "expo-image-picker",
@@ -84,8 +85,8 @@ module.exports = {
       "expo-secure-store",
       "expo-sqlite",
       "expo-asset",
-      "onnxruntime-react-native",
       "./plugins/withOnnxruntimePackage",
+      "onnxruntime-react-native",
       "./plugins/withVolumeKeyPaging",
       [
         "expo-camera",
