@@ -1265,9 +1265,22 @@ export class Paginator extends HTMLElement {
         }
         const canSelectWithTouchHandles = globalThis.navigator?.maxTouchPoints > 0
         let lastSelectionPoint = null
-        let edgeSelectionGrowth = null
+        let selectionGestureActive = false
+        let selectionGestureDoc = null
+        let selectionEdgeHold = null
+        let selectionEdgeHoldToken = 0
         let selectionPagingGate = null
-        const updateSelectionPoint = event => {
+        const SELECTION_EDGE_HOLD_MS = 1000
+        const SELECTION_EDGE_MIN_X = 0.75
+        const SELECTION_EDGE_MIN_Y = 0.8
+        const isPointInSelectionEdgeZone = (direction, x, y, width, height) => {
+            if (!width || !height) return false
+            const horizontalEdge = direction === 'backward'
+                ? x <= width * (1 - SELECTION_EDGE_MIN_X)
+                : x >= width * SELECTION_EDGE_MIN_X
+            return horizontalEdge && y >= height * SELECTION_EDGE_MIN_Y
+        }
+        const updateSelectionPoint = (event, doc) => {
             const touch = event.changedTouches?.[0]
             const clientX = touch?.clientX ?? event.clientX
             const clientY = touch?.clientY ?? event.clientY
@@ -1277,223 +1290,277 @@ export class Paginator extends HTMLElement {
                 clientY,
                 time: performance.now(),
                 type: event.type,
+                doc,
+            }
+            if (selectionEdgeHold && (event.type === 'touchmove' || event.type === 'pointermove')) {
+                const view = doc?.defaultView
+                const width = view?.innerWidth || doc?.documentElement?.clientWidth || 0
+                const height = view?.innerHeight || doc?.documentElement?.clientHeight || 0
+                const inBottomZone = height > 0 && clientY >= height * SELECTION_EDGE_MIN_Y
+                const inPhysicalZone = isPointInSelectionEdgeZone(
+                    selectionEdgeHold.direction,
+                    clientX,
+                    clientY,
+                    width,
+                    height,
+                )
+                if (!inBottomZone || (selectionEdgeHold.edgeMode === 'physical' && !inPhysicalZone))
+                    cancelSelectionEdgeHold('outside-zone')
             }
         }
-        const getMappedSelectionPoint = (range, backward) => {
+        const getSelectionEdgeInfo = (range, selRange, backward) => {
             if (!lastSelectionPoint) return null
             const view = range.commonAncestorContainer?.ownerDocument?.defaultView
-            const viewportSize = this.#vertical
-                ? view?.innerHeight || view?.document?.documentElement?.clientHeight || 0
-                : view?.innerWidth || view?.document?.documentElement?.clientWidth || 0
-            if (!viewportSize) return null
+            const width = view?.innerWidth || view?.document?.documentElement?.clientWidth || 0
+            const height = view?.innerHeight || view?.document?.documentElement?.clientHeight || 0
+            if (!width || !height || lastSelectionPoint.doc !== view?.document) return null
             const visible = this.#getRectMapper()(range.getBoundingClientRect())
-            const axisPoint = this.#vertical ? lastSelectionPoint.clientY : lastSelectionPoint.clientX
-            const ratio = Math.max(0, Math.min(1, axisPoint / viewportSize))
+            const rects = selRange.getClientRects()
+            const rect = backward ? rects[0] : rects[rects.length - 1]
+            const mapped = rect ? this.#getRectMapper()(rect) : null
+            const edgeInset = Math.min(96, this.size * 0.2)
+            const axisSize = this.#vertical ? height : width
+            const axisPoint = this.#vertical
+                ? lastSelectionPoint.clientY
+                : lastSelectionPoint.clientX
+            const ratio = Math.max(0, Math.min(1, axisPoint / axisSize))
             const logicalRatio = this.#rtl && !this.#vertical ? 1 - ratio : ratio
             const mappedPoint = visible.left + (visible.right - visible.left) * logicalRatio
+            const mappedEdge = backward
+                ? mappedPoint <= visible.left + edgeInset
+                : mappedPoint >= visible.right - edgeInset
+            const atSelectionEdge = backward
+                ? selRange.compareBoundaryPoints(Range.START_TO_START, range) < 0
+                    || !!mapped && mapped.left <= visible.left + edgeInset
+                : selRange.compareBoundaryPoints(Range.END_TO_END, range) > 0
+                    || !!mapped && mapped.right >= visible.right - edgeInset
+            const isDragging = lastSelectionPoint.type === 'touchmove'
+                || lastSelectionPoint.type === 'pointermove'
+            const physicalEdge = isPointInSelectionEdgeZone(
+                backward,
+                lastSelectionPoint.clientX,
+                lastSelectionPoint.clientY,
+                width,
+                height,
+            )
+            const bottomEdge = lastSelectionPoint.clientY >= height * SELECTION_EDGE_MIN_Y
             return {
-                mappedPoint,
+                x: lastSelectionPoint.clientX,
+                y: lastSelectionPoint.clientY,
+                width,
+                height,
                 visible,
-                ratio,
+                mapped,
+                mappedPoint,
+                mappedEdge,
+                edgeInset,
+                atSelectionEdge,
+                physicalEdge,
+                inEdgeZone: isDragging && bottomEdge && (physicalEdge || mappedEdge || atSelectionEdge),
                 age: performance.now() - lastSelectionPoint.time,
                 type: lastSelectionPoint.type,
-                backward,
+                isDragging,
             }
         }
-        const getSelectionTextLength = sel => sel.toString?.()?.trim?.()?.length ?? 0
-        const getEdgeGrowth = (backward, mapped, visible) => {
-            const now = performance.now()
-            const edgePosition = Math.round(backward ? mapped.left : mapped.right)
-            const direction = backward ? 'backward' : 'forward'
-            if (!edgeSelectionGrowth
-                || edgeSelectionGrowth.direction !== direction
-                || Math.abs(edgeSelectionGrowth.visibleLeft - visible.left) > 4
-                || Math.abs(edgeSelectionGrowth.visibleRight - visible.right) > 4
-                || now - edgeSelectionGrowth.updatedAt > 2500) {
-                edgeSelectionGrowth = {
-                    direction,
-                    edgePosition,
-                    visibleLeft: visible.left,
-                    visibleRight: visible.right,
-                    baseLength: null,
-                    currentLength: 0,
-                    updatedAt: now,
-                }
-            }
-            edgeSelectionGrowth.edgePosition = edgePosition
-            edgeSelectionGrowth.updatedAt = now
-            return edgeSelectionGrowth
+        const getSelectionTextLength = sel => sel?.toString?.()?.trim?.()?.length ?? 0
+        const holdDetail = (hold, now = performance.now(), detail = {}) => ({
+            direction: hold?.direction,
+            x: Math.round(hold?.x ?? lastSelectionPoint?.clientX ?? 0),
+            y: Math.round(hold?.y ?? lastSelectionPoint?.clientY ?? 0),
+            width: Math.round(hold?.width ?? 0),
+            height: Math.round(hold?.height ?? 0),
+            edgeMode: hold?.edgeMode,
+            age: Math.round(now - (hold?.startedAt ?? now)),
+            textLength: hold?.textLength ?? 0,
+            ...detail,
+        })
+        const setSelectionNavigationLock = locked => {
+            this.navigationLocked = locked
         }
-        const resetEdgeGrowth = () => {
-            edgeSelectionGrowth = null
-        }
-        const lockSelectionPaging = (direction, textLength) => {
-            selectionPagingGate = {
-                direction,
-                textLength,
-                time: performance.now(),
-            }
-        }
-        const shouldSkipSelectionPaging = (direction, textLength) => {
-            if (!selectionPagingGate) return false
-            const elapsed = performance.now() - selectionPagingGate.time
-            if (elapsed > 1800 || selectionPagingGate.direction !== direction) {
-                selectionPagingGate = null
-                return false
-            }
-            return textLength >= selectionPagingGate.textLength - 8
-        }
-        const unlockSelectionPaging = () => {
+        const cancelSelectionEdgeHold = reason => {
+            const hold = selectionEdgeHold
+            selectionEdgeHoldToken += 1
+            if (hold?.timer) clearTimeout(hold.timer)
+            selectionEdgeHold = null
             selectionPagingGate = null
+            setSelectionNavigationLock(false)
+            if (hold) debugSelectionPaging('edge-hold-cancel', holdDetail(hold, performance.now(), { reason }))
         }
-        const checkPointerSelection = debounce((range, sel) => {
-            if (this.#navigationLocked) {
-                debugSelectionPaging('skip', { reason: 'navigation-locked' })
+        const releaseSelectionEdgeHold = (reason, sel) => {
+            const hold = selectionEdgeHold
+            cancelSelectionEdgeHold(reason)
+            const point = lastSelectionPoint
+            debugSelectionPaging('edge-release', {
+                direction: hold?.direction,
+                x: Math.round(hold?.x ?? point?.clientX ?? 0),
+                y: Math.round(hold?.y ?? point?.clientY ?? 0),
+                width: Math.round(hold?.width ?? 0),
+                height: Math.round(hold?.height ?? 0),
+                age: Math.round(performance.now() - (hold?.startedAt ?? point?.time ?? performance.now())),
+                textLength: getSelectionTextLength(sel),
+                reason,
+            })
+        }
+        const armSelectionEdgeHold = (direction, edge, textLength, range) => {
+            if (!selectionGestureActive || selectionGestureDoc !== range.commonAncestorContainer?.ownerDocument)
+                return
+            if (selectionPagingGate
+                && selectionPagingGate.direction === direction
+                && selectionPagingGate.pointTime === lastSelectionPoint?.time) {
+                debugSelectionPaging('skip', holdDetail({
+                    direction,
+                    x: edge.x,
+                    y: edge.y,
+                    width: edge.width,
+                    height: edge.height,
+                    startedAt: performance.now(),
+                    textLength,
+                }, performance.now(), { reason: 'same-gesture-after-fire' }))
                 return
             }
-            if (!sel.rangeCount) {
+            if (selectionEdgeHold) {
+                if (selectionEdgeHold.direction === direction) return
+                cancelSelectionEdgeHold('direction-changed')
+            }
+            const token = ++selectionEdgeHoldToken
+            const hold = {
+                token,
+                direction,
+                x: edge.x,
+                y: edge.y,
+                width: edge.width,
+                height: edge.height,
+                textLength,
+                edgeMode: edge.physicalEdge
+                    ? 'physical'
+                    : edge.mappedEdge
+                        ? 'mapped'
+                        : 'selection',
+                startedAt: performance.now(),
+                pointTime: lastSelectionPoint?.time,
+                timer: null,
+            }
+            selectionEdgeHold = hold
+            setSelectionNavigationLock(true)
+            debugSelectionPaging('edge-hold-arm', holdDetail(hold))
+            hold.timer = setTimeout(async () => {
+                const current = selectionEdgeHold
+                const currentSelection = range.commonAncestorContainer?.ownerDocument?.getSelection?.()
+                if (current?.token !== token || !selectionGestureActive
+                    || !currentSelection?.rangeCount
+                    || currentSelection.isCollapsed
+                    || !getSelectionTextLength(currentSelection)) {
+                    if (current?.token === token) cancelSelectionEdgeHold('gesture-inactive')
+                    return
+                }
+                selectionEdgeHold = null
+                selectionPagingGate = { direction, pointTime: hold.pointTime }
+                debugSelectionPaging('edge-hold-fire', holdDetail(hold, performance.now(), {
+                    reason: 'hold-timeout',
+                }))
+                try {
+                    if (direction === 'backward') await this.prev()
+                    else await this.next()
+                } catch (error) {
+                    debugSelectionPaging('edge-hold-error', holdDetail(hold, performance.now(), {
+                        error: String(error),
+                    }))
+                } finally {
+                    setSelectionNavigationLock(false)
+                }
+            }, SELECTION_EDGE_HOLD_MS)
+        }
+        const checkPointerSelection = debounce((range, sel) => {
+            const selRange = sel.rangeCount ? sel.getRangeAt(0) : null
+            const doc = selRange?.commonAncestorContainer?.ownerDocument
+            if (!selectionGestureActive || selectionGestureDoc !== doc) {
+                debugSelectionPaging('skip', { reason: 'gesture-inactive' })
+                return
+            }
+            if (!selRange) {
                 debugSelectionPaging('skip', { reason: 'no-range' })
                 return
             }
-            const selRange = sel.getRangeAt(0)
             const backward = selectionIsBackward(sel)
             const direction = backward ? 'backward' : 'forward'
             const textLength = getSelectionTextLength(sel)
-            if (shouldSkipSelectionPaging(direction, textLength)) {
-                debugSelectionPaging('skip', { reason: 'selection-paging-gate', direction, textLength })
+            const edge = getSelectionEdgeInfo(range, selRange, backward)
+            if (!edge) {
+                debugSelectionPaging('skip', { reason: 'no-pointer' })
                 return
             }
-            if (backward && selRange.compareBoundaryPoints(Range.START_TO_START, range) < 0) {
-                debugSelectionPaging('prev')
-                lockSelectionPaging(direction, textLength)
-                this.prev()
+            debugSelectionPaging('edge-check', {
+                direction,
+                x: Math.round(edge.x),
+                y: Math.round(edge.y),
+                width: Math.round(edge.width),
+                height: Math.round(edge.height),
+                age: Math.round(edge.age),
+                textLength,
+                type: edge.type,
+                inEdgeZone: edge.inEdgeZone,
+                atSelectionEdge: edge.atSelectionEdge,
+                physicalEdge: edge.physicalEdge,
+                mappedEdge: edge.mappedEdge,
+                mappedPoint: Math.round(edge.mappedPoint),
+                mappedLeft: edge.mapped ? Math.round(edge.mapped.left) : null,
+                mappedRight: edge.mapped ? Math.round(edge.mapped.right) : null,
+            })
+            if (!canSelectWithTouchHandles || !edge.inEdgeZone || !edge.atSelectionEdge) {
+                cancelSelectionEdgeHold(
+                    !edge.inEdgeZone ? 'outside-zone' : !edge.atSelectionEdge ? 'selection-not-at-edge' : 'not-touch-handles',
+                )
+                return
             }
-            else if (!backward && selRange.compareBoundaryPoints(Range.END_TO_END, range) > 0) {
-                debugSelectionPaging('next')
-                lockSelectionPaging(direction, textLength)
-                this.next()
-            }
-            else if (canSelectWithTouchHandles) {
-                const rects = selRange.getClientRects()
-                const rect = backward ? rects[0] : rects[rects.length - 1]
-                const visible = this.#getRectMapper()(range.getBoundingClientRect())
-                const edgeInset = Math.min(96, this.size * 0.2)
-                const point = getMappedSelectionPoint(range, backward)
-                if (point && point.age < 1500) {
-                    debugSelectionPaging('pointer-edge-check', {
-                        backward,
-                        mappedPoint: Math.round(point.mappedPoint),
-                        visibleLeft: Math.round(point.visible.left),
-                        visibleRight: Math.round(point.visible.right),
-                        edgeInset: Math.round(edgeInset),
-                        ratio: Number(point.ratio.toFixed(3)),
-                        age: Math.round(point.age),
-                        type: point.type,
-                    })
-                    if (point.type !== 'touchstart'
-                        && backward && point.mappedPoint <= point.visible.left + edgeInset) {
-                        debugSelectionPaging('prev-edge', { source: 'pointer' })
-                        lockSelectionPaging(direction, textLength)
-                        this.prev()
-                        return
-                    }
-                    if (point.type !== 'touchstart'
-                        && !backward && point.mappedPoint >= point.visible.right - edgeInset) {
-                        debugSelectionPaging('next-edge', { source: 'pointer' })
-                        lockSelectionPaging(direction, textLength)
-                        this.next()
-                        return
-                    }
-                }
-                if (!rect) {
-                    debugSelectionPaging('skip', { reason: 'no-edge-rect' })
-                    return
-                }
-                const mapped = this.#getRectMapper()(rect)
-                const growth = getEdgeGrowth(backward, mapped, visible)
-                growth.baseLength = growth.baseLength == null
-                    ? textLength
-                    : Math.min(growth.baseLength, textLength)
-                growth.currentLength = textLength
-                const selectionGrowth = textLength - growth.baseLength
-                const growthInset = Math.min(128, this.size * 0.35)
-                debugSelectionPaging('edge-check', {
-                    backward,
-                    mappedLeft: Math.round(mapped.left),
-                    mappedRight: Math.round(mapped.right),
-                    visibleLeft: Math.round(visible.left),
-                    visibleRight: Math.round(visible.right),
-                    edgeInset: Math.round(edgeInset),
-                    textLength,
-                    growth: selectionGrowth,
-                    growthInset: Math.round(growthInset),
-                })
-                if (backward && mapped.left <= visible.left + edgeInset) {
-                    debugSelectionPaging('prev-edge')
-                    resetEdgeGrowth()
-                    lockSelectionPaging(direction, textLength)
-                    this.prev()
-                }
-                else if (!backward && mapped.right >= visible.right - edgeInset) {
-                    debugSelectionPaging('next-edge')
-                    resetEdgeGrowth()
-                    lockSelectionPaging(direction, textLength)
-                    this.next()
-                }
-                else if (!backward
-                    && mapped.right >= visible.right - growthInset
-                    && selectionGrowth >= 40) {
-                    debugSelectionPaging('next-edge', { source: 'growth', textLength, growth: selectionGrowth })
-                    resetEdgeGrowth()
-                    lockSelectionPaging(direction, textLength)
-                    this.next()
-                }
-                else if (!backward
-                    && mapped.left <= visible.left + 2
-                    && selectionGrowth >= 80) {
-                    debugSelectionPaging('next-edge', { source: 'page-start-growth', textLength, growth: selectionGrowth })
-                    resetEdgeGrowth()
-                    lockSelectionPaging(direction, textLength)
-                    this.next()
-                }
-                else if (backward
-                    && mapped.left <= visible.left + growthInset
-                    && selectionGrowth >= 40) {
-                    debugSelectionPaging('prev-edge', { source: 'growth', textLength, growth: selectionGrowth })
-                    resetEdgeGrowth()
-                    lockSelectionPaging(direction, textLength)
-                    this.prev()
-                }
-                else if (backward
-                    && mapped.right >= visible.right - 2
-                    && selectionGrowth >= 80) {
-                    debugSelectionPaging('prev-edge', { source: 'page-end-growth', textLength, growth: selectionGrowth })
-                    resetEdgeGrowth()
-                    lockSelectionPaging(direction, textLength)
-                    this.prev()
-                }
-            }
-            else debugSelectionPaging('skip', { reason: 'not-touch-handles' })
-        }, 700)
+            armSelectionEdgeHold(direction, edge, textLength, range)
+        }, 120)
         this.addEventListener('load', ({ detail: { doc } }) => {
             let isPointerSelecting = false
-            doc.addEventListener('pointerdown', () => isPointerSelecting = true)
-            doc.addEventListener('pointermove', updateSelectionPoint)
+            doc.addEventListener('pointerdown', event => {
+                isPointerSelecting = true
+                selectionGestureActive = true
+                selectionGestureDoc = doc
+                selectionPagingGate = null
+                updateSelectionPoint(event, doc)
+            })
+            doc.addEventListener('pointermove', event => updateSelectionPoint(event, doc))
             doc.addEventListener('pointerup', () => {
                 isPointerSelecting = false
-                resetEdgeGrowth()
-                unlockSelectionPaging()
+                if (selectionGestureDoc === doc) {
+                    selectionGestureActive = false
+                    selectionGestureDoc = null
+                    releaseSelectionEdgeHold('pointerup', doc.getSelection?.())
+                }
             })
             doc.addEventListener('pointercancel', () => {
                 isPointerSelecting = false
-                resetEdgeGrowth()
-                unlockSelectionPaging()
+                if (selectionGestureDoc === doc) {
+                    selectionGestureActive = false
+                    selectionGestureDoc = null
+                    releaseSelectionEdgeHold('pointercancel', doc.getSelection?.())
+                }
             })
             doc.addEventListener('touchstart', event => {
-                updateSelectionPoint(event)
-                unlockSelectionPaging()
+                selectionGestureActive = true
+                selectionGestureDoc = doc
+                selectionPagingGate = null
+                updateSelectionPoint(event, doc)
             }, { passive: true })
-            doc.addEventListener('touchmove', updateSelectionPoint, { passive: true })
+            doc.addEventListener('touchmove', event => updateSelectionPoint(event, doc), { passive: true })
+            doc.addEventListener('touchend', () => {
+                if (selectionGestureDoc === doc) {
+                    selectionGestureActive = false
+                    selectionGestureDoc = null
+                    releaseSelectionEdgeHold('touchend', doc.getSelection?.())
+                }
+            }, { passive: true })
+            doc.addEventListener('touchcancel', () => {
+                if (selectionGestureDoc === doc) {
+                    selectionGestureActive = false
+                    selectionGestureDoc = null
+                    releaseSelectionEdgeHold('touchcancel', doc.getSelection?.())
+                }
+            }, { passive: true })
             let isKeyboardSelecting = false
             doc.addEventListener('keydown', () => isKeyboardSelecting = true)
             doc.addEventListener('keyup', () => isKeyboardSelecting = false)
@@ -1509,6 +1576,7 @@ export class Paginator extends HTMLElement {
                 }
                 const sel = doc.getSelection()
                 if (!sel.rangeCount) {
+                    cancelSelectionEdgeHold('selection-cleared')
                     debugSelectionPaging('selectionchange-skip', { reason: 'no-range-count', type: sel.type })
                     return
                 }
@@ -2103,7 +2171,12 @@ export class Paginator extends HTMLElement {
         const primaryTotal = this.#vertical ? totalDx : totalDy
         const crossTotal = this.#vertical ? totalDy : totalDx
 
-        if (primaryTotal <= TOUCH_SLOP || primaryTotal < crossTotal) return
+        if (primaryTotal <= TOUCH_SLOP || primaryTotal < crossTotal) {
+            state.x = x
+            state.y = y
+            state.t = e.timeStamp
+            return
+        }
 
         const dx = state.x - x
         const dy = state.y - y

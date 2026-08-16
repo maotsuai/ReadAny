@@ -36,7 +36,6 @@ interface PromptContext {
 
 /** Build the full system prompt from context */
 export function buildSystemPrompt(ctx: PromptContext): string {
-  const hasSelectedBooksContext = Boolean(ctx.allowedToolNames?.includes("searchSelectedBooks"));
   const sections: string[] = [
     buildRoleSection(),
     buildBookContextSection(ctx.book),
@@ -50,14 +49,14 @@ export function buildSystemPrompt(ctx: PromptContext): string {
       !!(ctx.book?.id || ctx.bookId),
       ctx.allowedToolNames,
     ),
-    buildWorkflowSection(ctx.isVectorized, !!(ctx.book?.id || ctx.bookId), hasSelectedBooksContext),
+    buildWorkflowSection(ctx.isVectorized, !!(ctx.book?.id || ctx.bookId), ctx.allowedToolNames),
     buildConstraintsSection(
       ctx.userLanguage,
       ctx.isVectorized,
       ctx.spoilerFree,
       ctx.book,
       ctx.semanticContext,
-      hasSelectedBooksContext,
+      ctx.allowedToolNames,
     ),
   ];
 
@@ -304,9 +303,12 @@ function buildToolsSection(
       "- **getAnnotations**: Get user's highlights and notes (params: type)",
     );
     if (isVectorized && canUse("addCitation")) {
+      const citationSourceHint = canUse("ragSearch")
+        ? "ragSearch/tool results"
+        : "available tool results";
       pushTool(
         "addCitation",
-        "- **addCitation**: CRITICAL - Register a citation with CFI for precise navigation. You MUST extract the 'cfi' field from ragSearch/tool results and pass it here. The citationIndex param determines which [N] marker it maps to (params: citationIndex [REQUIRED - the number N for [N]], chapterTitle, chapterIndex, cfi [REQUIRED from tool results], quotedText, reasoning)",
+        `- **addCitation**: CRITICAL - Register a citation with CFI for precise navigation. You MUST extract the 'cfi' field from ${citationSourceHint} and pass it here. The citationIndex param determines which [N] marker it maps to (params: citationIndex [REQUIRED - the number N for [N]], chapterTitle, chapterIndex, cfi [REQUIRED from tool results], quotedText, reasoning)`,
       );
     } else if (canUse("addCitation")) {
       pushTool(
@@ -333,8 +335,34 @@ function buildToolsSection(
 function buildWorkflowSection(
   isVectorized: boolean,
   hasBookContext: boolean,
-  hasSelectedBooksContext = false,
+  allowedToolNames?: string[],
 ): string {
+  const allowed = allowedToolNames ? new Set(allowedToolNames) : null;
+  const canUse = (name: string) => !allowed || allowed.has(name);
+  const anyCanUse = (names: string[]) => names.some(canUse);
+  const hasSelectedBooksContext = Boolean(allowedToolNames?.includes("searchSelectedBooks"));
+  const analysisTools = [
+    "summarize",
+    "extractEntities",
+    "analyzeArguments",
+    "findQuotes",
+    "compareSections",
+  ].filter(canUse);
+  const contentToolNames = [
+    "getSelection",
+    "getCurrentChapter",
+    "getReadingProgress",
+    "getSurroundingContext",
+    "resolveChapterReference",
+    "ragSearch",
+    "ragToc",
+    "ragContext",
+    "fallbackSearch",
+    "fallbackToc",
+    "fallbackChapterContext",
+    "searchSelectedBooks",
+    ...analysisTools,
+  ];
   const steps: string[] = [
     "## Core Workflow",
     "",
@@ -353,47 +381,82 @@ function buildWorkflowSection(
     steps.push(
       "   - **searchSelectedBooks**: retrieve content only from the books selected in this chat",
     );
+  } else if (!anyCanUse(contentToolNames)) {
+    steps.push(
+      "This turn does not expose book-content retrieval tools. Use only the tools listed in Turn-Available Tools; do not call or plan with retrieval/citation tools that are not listed.",
+    );
+    return steps.join("\n");
   } else if (isVectorized) {
-    steps.push(
-      "   - **resolveChapterReference**: first step for user-mentioned chapter numbers/titles; do not convert human chapter numbers to chapterIndex yourself",
-    );
-    steps.push(
-      "   - **ragSearch**: primary path for indexed book-content questions by topic/keyword",
-    );
-    steps.push("   - **ragToc**: for compact/paginated structure browsing");
-    steps.push(
-      "   - **summarize/extractEntities/analyzeArguments/findQuotes**: for indexed content analysis",
-    );
+    if (canUse("resolveChapterReference")) {
+      steps.push(
+        "   - **resolveChapterReference**: first step for user-mentioned chapter numbers/titles; do not convert human chapter numbers to chapterIndex yourself",
+      );
+    }
+    if (canUse("ragSearch")) {
+      steps.push(
+        "   - **ragSearch**: primary path for indexed book-content questions by topic/keyword",
+      );
+    }
+    if (canUse("ragToc")) steps.push("   - **ragToc**: for compact/paginated structure browsing");
+    if (analysisTools.length > 0) {
+      steps.push(`   - **${analysisTools.join("/")}**: for indexed content analysis`);
+    }
   } else {
-    steps.push(
-      "   - **resolveChapterReference**: first step for user-mentioned chapter numbers/titles; do not convert human chapter numbers to chapterIndex yourself",
-    );
-    steps.push("   - **fallbackSearch**: for keyword exploration when the book is not vectorized");
-    steps.push("   - **fallbackToc**: for compact/paginated structure browsing without an index");
-    steps.push("   - **fallbackChapterContext**: for reading a specific chapter without an index");
+    if (canUse("resolveChapterReference")) {
+      steps.push(
+        "   - **resolveChapterReference**: first step for user-mentioned chapter numbers/titles; do not convert human chapter numbers to chapterIndex yourself",
+      );
+    }
+    if (canUse("fallbackSearch")) {
+      steps.push(
+        "   - **fallbackSearch**: for keyword exploration when the book is not vectorized",
+      );
+    }
+    if (canUse("fallbackToc")) {
+      steps.push("   - **fallbackToc**: for compact/paginated structure browsing without an index");
+    }
+    if (canUse("fallbackChapterContext")) {
+      steps.push(
+        "   - **fallbackChapterContext**: for reading a specific chapter without an index",
+      );
+    }
   }
 
-  if (hasBookContext) {
+  if (canUse("getSurroundingContext")) {
     steps.push("   - **getSurroundingContext**: for current page content");
   }
 
-  steps.push("3. **Register citations before answering** — If your answer uses book content:");
-  steps.push("   - Call **addCitation** before writing the final response body");
-  steps.push(
-    "   - Wait for addCitation to return successfully before using the matching [N] marker",
-  );
-  steps.push("   - This rule applies to BOTH indexed books and non-indexed fallback content");
-  steps.push("4. **Synthesize and answer** — Only after citation registration, write your answer");
+  if (canUse("addCitation")) {
+    steps.push("3. **Register citations before answering** — If your answer uses book content:");
+    steps.push(
+      "   - Call **addCitation** with the returned CFI when available; for fallback results without a CFI, pass an empty cfi plus the exact chapterIndex and quotedText so the tool can resolve a jump target",
+    );
+    steps.push("   - Wait for addCitation to succeed before using the matching [N] marker");
+    steps.push("4. **Synthesize and answer** — Use only successfully registered [N] markers");
+  } else {
+    steps.push("3. **Use plain source references** — If your answer uses book content:");
+    steps.push(
+      "   - The citation tool is not available this turn; do not use clickable [N] citation markers. Cite plainly with chapter/title/excerpt information from available results.",
+    );
+    steps.push("4. **Synthesize and answer** — Write your answer using only retrieved content");
+  }
   steps.push("");
 
-  if (hasSelectedBooksContext && !hasBookContext) {
+  if (hasSelectedBooksContext && !hasBookContext && canUse("addCitation")) {
     steps.push("## CRITICAL: Selected-Book Citation Requirements");
     steps.push("");
     steps.push(
       "For every book-content claim, call addCitation with the exact bookId, chapterIndex, cfi and quotedText returned by searchSelectedBooks. If a result has no CFI or verification fails, cite the book and chapter in plain text without a [N] marker.",
     );
     steps.push("");
-  } else if (isVectorized) {
+  } else if (isVectorized && canUse("addCitation")) {
+    const sourceTools = [
+      "ragSearch",
+      "ragContext",
+      ...analysisTools,
+      "getSurroundingContext",
+      "getCurrentChapter",
+    ].filter(canUse);
     steps.push("## CRITICAL: Citation Requirements");
     steps.push("");
     steps.push("**You MUST cite all factual claims about the book's content.**");
@@ -401,7 +464,7 @@ function buildWorkflowSection(
     steps.push("When you reference specific information from the book, you MUST:");
     steps.push("");
     steps.push("1. **Call addCitation tool** for each source location:");
-    steps.push("   - Use chapterTitle, chapterIndex, cfi from ragSearch/tool results");
+    steps.push("   - Use chapterTitle, chapterIndex, cfi from available tool results");
     steps.push("   - Provide a short quotedText excerpt (max 200 chars)");
     steps.push("   - Each citation registers a verifiable source");
     steps.push("");
@@ -415,16 +478,18 @@ function buildWorkflowSection(
     steps.push("   - Specific facts, data, or statistics from the book");
     steps.push("   - Author's arguments, claims, or opinions");
     steps.push("   - Plot events, character descriptions, or story details");
-    steps.push("   - Any content retrieved via ragSearch, summarize, or content tools");
+    steps.push("   - Any content retrieved via available content tools");
     steps.push("   - General knowledge not from this book does not need citation");
     steps.push(
       "   - Your own analysis does not need citation, but cite the content you're analyzing",
     );
     steps.push("");
     steps.push("4. **Citation workflow with CFI:**");
-    steps.push(
-      "   - Step 1: Use ragSearch/ragContext or indexed analysis tools to retrieve content",
-    );
+    if (sourceTools.length > 0) {
+      steps.push(`   - Step 1: Use ${sourceTools.join("/")} to retrieve content`);
+    } else {
+      steps.push("   - Step 1: Use the available content tool results");
+    }
     steps.push("   - Step 2: Extract chapterTitle, chapterIndex, and **CFI** from tool results");
     steps.push(
       "   - Step 3: Call addCitation with the extracted CFI and set citationIndex to the number you will use in [N]",
@@ -437,14 +502,14 @@ function buildWorkflowSection(
       "   - Step 5: Write your final response using [1], [2] to reference citations — each must match the citationIndex you set",
     );
     steps.push(
-      "   - **Example**: ragSearch returns {cfi: 'epubcfi(/6/52!/4...)', ...} → pass this exact CFI to addCitation",
+      "   - **Example**: a tool result returns {cfi: 'epubcfi(/6/52!/4...)', ...} -> pass this exact CFI to addCitation",
     );
     steps.push("");
     steps.push(
       "**This is MANDATORY for academic integrity and user trust. Never skip citations for book content.**",
     );
     steps.push("");
-  } else {
+  } else if (!isVectorized && canUse("addCitation")) {
     steps.push("## CRITICAL: Fallback Source Requirements");
     steps.push("");
     steps.push(
@@ -455,7 +520,9 @@ function buildWorkflowSection(
     steps.push(
       "1. If the exact fallback result/chunk you cite has a non-empty cfi, call addCitation with that cfi, chapterTitle, chapterIndex, and quotedText",
     );
-    steps.push("2. Call addCitation before writing the final response body");
+    steps.push(
+      "2. If the result has no cfi, still call addCitation with an empty cfi, the exact chapterIndex, and a verbatim quotedText excerpt; the tool will resolve the paragraph CFI",
+    );
     steps.push("3. Use [1], [2], [3] markers only after addCitation succeeds");
     steps.push(
       "4. The citationIndex values MUST follow the final response marker order exactly: the source for [1] uses citationIndex=1, [2] uses citationIndex=2, etc. Never swap citationIndex values even if tool calls complete out of order.",
@@ -471,32 +538,51 @@ function buildWorkflowSection(
   }
 
   steps.push("### Tool-Calling Discipline (CRITICAL)");
-  steps.push(
-    '- **NEVER call the same tool repeatedly with similar/identical arguments.** If ragSearch("人物") returned results, DO NOT call ragSearch("人物介绍"), ragSearch("人物关系") etc. Use the results you already have.',
-  );
+  const primarySearchTool = canUse("ragSearch")
+    ? "ragSearch"
+    : canUse("fallbackSearch")
+      ? "fallbackSearch"
+      : undefined;
+  if (primarySearchTool) {
+    steps.push(
+      `- **NEVER call the same tool repeatedly with similar/identical arguments.** If ${primarySearchTool}("人物") returned results, DO NOT call ${primarySearchTool}("人物介绍"), ${primarySearchTool}("人物关系") etc. Use the results you already have.`,
+    );
+  } else {
+    steps.push(
+      "- **NEVER call the same available tool repeatedly with similar/identical arguments.** Use the results you already have.",
+    );
+  }
   steps.push(
     '- **When a tool returns `content` + `instruction` fields**: the `content` IS your data. Read it, follow the `instruction` to analyze it, then write your answer. Do NOT call more tools to "find more".',
   );
   steps.push(
-    '- **Each tool call must have a distinct purpose.** Good: ragToc → summarize(chapter 1) → summarize(chapter 2). Bad: ragSearch("主题") → ragSearch("主要主题") → ragSearch("书的主题").',
+    "- **Each tool call must have a distinct purpose.** Do not use multiple similar queries to fish for the same answer.",
   );
   steps.push(
-    "- If a content retrieval/analysis tool returns enough information to answer, do NOT call more retrieval tools. If the answer uses that book content, call addCitation first, then answer.",
+    canUse("addCitation")
+      ? "- If a content retrieval/analysis tool returns enough information to answer, do NOT call more retrieval tools. Call addCitation first; for fallback content without a returned CFI, pass an empty cfi with the exact chapterIndex and verbatim quotedText so it can resolve the jump target."
+      : "- If a content retrieval/analysis tool returns enough information to answer, do NOT call more retrieval tools. If citations are unavailable, answer with plain chapter/source references.",
   );
   steps.push(
     "- If a tool returns no results or an error, tell the user honestly. Do NOT retry with rephrased queries.",
   );
-  steps.push(
-    isVectorized
-      ? "- For indexed books, prefer ragSearch/ragContext for broad content questions. Use current selection/page/chapter context first only when the user explicitly asks about what they are reading right now, then fall back to indexed retrieval if needed."
-      : "- For non-indexed books, prefer fallbackSearch/fallbackChapterContext for broad content questions. Use current selection/page/chapter context first only when the user explicitly asks about what they are reading right now, then fall back to original-file retrieval if needed.",
-  );
-  steps.push(
-    "- For a specific chapter request, call resolveChapterReference first. If matched=false, present the candidates or ask for clarification instead of guessing chapterIndex.",
-  );
-  steps.push(
-    "- For chapter lookup failures, chapter search gets at most three chances in one turn. The first uses the user's original wording, the second may use one simplified query, and the third is the last chance. After that, STOP and tell the user: 未能可靠定位章节，请补充更准确的章节名",
-  );
+  if (isVectorized && (canUse("ragSearch") || canUse("ragContext"))) {
+    steps.push(
+      "- For indexed books, prefer available indexed retrieval tools for broad content questions. Use current selection/page/chapter context first only when the user explicitly asks about what they are reading right now, then fall back to indexed retrieval if needed.",
+    );
+  } else if (!isVectorized && (canUse("fallbackSearch") || canUse("fallbackChapterContext"))) {
+    steps.push(
+      "- For non-indexed books, prefer available fallback content tools for broad content questions. Use current selection/page/chapter context first only when the user explicitly asks about what they are reading right now, then fall back to original-file retrieval if needed.",
+    );
+  }
+  if (canUse("resolveChapterReference")) {
+    steps.push(
+      "- For a specific chapter request, call resolveChapterReference first. If matched=false, present the candidates or ask for clarification instead of guessing chapterIndex.",
+    );
+    steps.push(
+      "- For chapter lookup failures, chapter search gets at most three chances in one turn. The first uses the user's original wording, the second may use one simplified query, and the third is the last chance. After that, STOP and tell the user: 未能可靠定位章节，请补充更准确的章节名",
+    );
+  }
   steps.push(
     '- For multi-step tasks (e.g. "summarize each chapter"), you MAY call tools many times — but each call must target a DIFFERENT chapter/scope. Never repeat the same query.',
   );
@@ -515,13 +601,18 @@ function buildConstraintsSection(
   spoilerFree?: boolean,
   book?: Book | null,
   semanticContext?: SemanticContext | null,
-  hasSelectedBooksContext = false,
+  allowedToolNames?: string[],
 ): string {
-  const citationGuideline = hasSelectedBooksContext
-    ? "- For selected-book content, register citations with the exact bookId and CFI returned by searchSelectedBooks"
-    : isVectorized
-      ? "- When citing indexed book content, use [1], [2] format with registered citations via addCitation tool"
-      : "- When citing non-indexed fallback content, use [1], [2] only after addCitation succeeds with a returned fallback cfi; otherwise use plain chapter names/indices and quoted excerpts";
+  const allowed = allowedToolNames ? new Set(allowedToolNames) : null;
+  const canUse = (name: string) => !allowed || allowed.has(name);
+  const hasSelectedBooksContext = Boolean(allowedToolNames?.includes("searchSelectedBooks"));
+  const citationGuideline = canUse("addCitation")
+    ? hasSelectedBooksContext
+      ? "- For selected-book content, register citations with the exact bookId and CFI returned by searchSelectedBooks"
+      : isVectorized
+        ? "- When citing indexed book content, use [1], [2] format with registered citations via addCitation tool"
+        : "- When citing non-indexed fallback content, use [1], [2] only after addCitation succeeds with a returned fallback cfi; otherwise use plain chapter names/indices and quoted excerpts"
+    : "- When citing book content, do not use clickable [N] markers unless the citation tool is available; use plain chapter names/indices and quoted excerpts instead";
   const lines = [
     "## Response Guidelines",
     `- **IMPORTANT: You MUST respond in ${language || "English"}. This is non-negotiable regardless of the book's language.**`,
@@ -545,7 +636,9 @@ function buildConstraintsSection(
     "    B -->|No| D[Action 2]",
     "```",
     "",
-    "Note: Do NOT use Mermaid for mindmaps - use the dedicated `mindmap` tool instead.",
+    canUse("mindmap")
+      ? "Note: Do NOT use Mermaid for mindmaps - use the dedicated `mindmap` tool instead."
+      : "Note: Use Mermaid diagrams only when they help the answer; do not reference unavailable tools.",
   ];
 
   if (spoilerFree && book) {
@@ -564,8 +657,20 @@ function buildConstraintsSection(
     lines.push(
       "1. **NEVER reveal** plot events, character fates, twists, deaths, relationships, or any narrative developments that occur after the reader's current position.",
     );
+    const spoilerSensitiveTools = [
+      "ragSearch",
+      "ragContext",
+      "summarize",
+      "extractEntities",
+      "findQuotes",
+      "compareSections",
+      "fallbackSearch",
+      "fallbackChapterContext",
+    ].filter(canUse);
     lines.push(
-      "2. **NEVER use tools** (ragSearch, ragContext, summarize, extractEntities, findQuotes, compareSections) to retrieve or analyze content from chapters beyond the current reading position. If a tool call would target a later chapter, DO NOT make that call.",
+      spoilerSensitiveTools.length > 0
+        ? `2. **NEVER use tools** (${spoilerSensitiveTools.join(", ")}) to retrieve or analyze content from chapters beyond the current reading position. If a tool call would target a later chapter, DO NOT make that call.`
+        : "2. **NEVER retrieve or analyze** content from chapters beyond the current reading position.",
     );
     lines.push(
       '3. **If the user explicitly asks about later content** (e.g., "What happens in Chapter 5?", "How does the book end?", "Does X character die?"), **politely decline**: explain that you want to protect their reading experience, and suggest they keep reading.',

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type { AIConfig, ReadingContext } from "../../types";
 import { isOutputLimitTermination, streamReadingAgent } from "../agents/reading-agent";
 import type { ToolDefinition } from "../tools";
@@ -126,6 +127,89 @@ describe("streamReadingAgent tool registration", () => {
     expect(toolNames).toContain("fallbackSearch");
     expect(toolNames).toContain("fallbackChapterContext");
     expect(toolNames).toContain("addCitation");
+  });
+
+  it("registers tool schemas that can be represented as JSON Schema", async () => {
+    createReactAgentMock.mockReturnValue({
+      streamEvents: vi.fn(() => ({
+        [Symbol.asyncIterator]: async function* () {
+          // no-op stream
+        },
+      })),
+    });
+
+    for await (const _event of streamReadingAgent(
+      {
+        aiConfig: makeAIConfig(),
+        book: null,
+        bookId: "book-1",
+        semanticContext: null,
+        enabledSkills: [],
+        isVectorized: false,
+        getAvailableTools,
+      },
+      "介绍一下这本书",
+    )) {
+      // drain stream
+    }
+
+    const call = createReactAgentMock.mock.calls[createReactAgentMock.mock.calls.length - 1]?.[0];
+    for (const registeredTool of call.tools as Array<{
+      schema: Parameters<typeof z.toJSONSchema>[0];
+    }>) {
+      expect(() => z.toJSONSchema(registeredTool.schema)).not.toThrow();
+    }
+  });
+
+  it("normalizes common string and JSON-shaped tool arguments before execution", async () => {
+    createReactAgentMock.mockReturnValue({
+      streamEvents: vi.fn(() => ({
+        [Symbol.asyncIterator]: async function* () {
+          // no-op stream
+        },
+      })),
+    });
+    const execute = vi.fn(async () => ({ ok: true }));
+    const tools: ToolDefinition[] = [
+      {
+        name: "flexibleTool",
+        description: "Accept common model argument variants",
+        parameters: {
+          count: { type: "number", description: "Count", required: true },
+          enabled: { type: "boolean", description: "Enabled", required: true },
+          updates: { type: "string", description: "Updates JSON", required: true },
+        },
+        execute,
+      },
+    ];
+
+    for await (const _event of streamReadingAgent(
+      {
+        aiConfig: makeAIConfig(),
+        book: null,
+        bookId: "book-1",
+        semanticContext: null,
+        enabledSkills: [],
+        isVectorized: false,
+        getAvailableTools: () => tools,
+      },
+      "run tool",
+    )) {
+      // drain stream
+    }
+
+    const call = createReactAgentMock.mock.calls[createReactAgentMock.mock.calls.length - 1]?.[0];
+    const registeredTool = (call.tools as Array<{ func: (input: unknown) => Promise<string> }>)[0];
+    await registeredTool.func({ count: "3", enabled: "true", updates: { title: "New" } });
+
+    expect(execute).toHaveBeenCalledWith(
+      {
+        count: 3,
+        enabled: true,
+        updates: JSON.stringify({ title: "New" }),
+      },
+      { signal: expect.any(AbortSignal) },
+    );
   });
 
   it("returns a structured error when a tool execution times out", async () => {

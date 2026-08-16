@@ -79,7 +79,7 @@ export function createAddCitationTool(bookId: string): ToolDefinition {
   return {
     name: "addCitation",
     description:
-      "CRITICAL: Register a citation for specific content from the book. You MUST call this tool whenever you reference factual information from the book in your response. This creates a verifiable citation that users can click to jump to the exact location. Returns citation metadata that you should reference using [1], [2], [3] format in your response text. The citationIndex parameter determines the number — pass 1 for [1], 2 for [2], etc.",
+      "Register a clickable citation for specific book content. Use a precise CFI returned by retrieval when available. For fallback content without a returned CFI, pass an empty cfi together with the exact chapterIndex and a verbatim quotedText excerpt; the tool will resolve the paragraph CFI. Never guess a CFI. After a successful call, use the matching [1], [2], [3] marker.",
     parameters: {
       citationIndex: {
         type: "number",
