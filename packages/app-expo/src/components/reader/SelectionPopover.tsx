@@ -23,7 +23,6 @@ import * as Clipboard from "expo-clipboard";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Dimensions,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -31,10 +30,9 @@ import {
   Text,
   TouchableOpacity,
   View,
+  useWindowDimensions,
 } from "react-native";
 
-const SCREEN_WIDTH = Dimensions.get("window").width;
-const SCREEN_HEIGHT = Dimensions.get("window").height;
 const POPOVER_MARGIN = 8;
 const POPOVER_PADDING = 4;
 const BUTTON_SIZE = 36;
@@ -79,6 +77,7 @@ export function SelectionPopover({
 }: Props) {
   const { t } = useTranslation();
   const colors = useColors();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const s = useMemo(() => makeStyles(colors), [colors]);
   const [showNoteModal, setShowNoteModal] = useState(false);
   const [showColors, setShowColors] = useState(true);
@@ -100,11 +99,7 @@ export function SelectionPopover({
     }
   }, [selection.cfi, hasExistingHighlight]);
 
-  const buttonCount =
-    4 +
-    (onNote ? 1 : 0) +
-    (onTranslate ? 1 : 0) +
-    (onSpeak ? 1 : 0);
+  const buttonCount = 4 + (onNote ? 1 : 0) + (onTranslate ? 1 : 0) + (onSpeak ? 1 : 0);
   const colorRowItemCount = HIGHLIGHT_COLORS.length + (canRemoveHighlight ? 2 : 0);
   const colorRowWidth = showColors
     ? HIGHLIGHT_COLORS.length * COLOR_DOT_SIZE +
@@ -122,7 +117,7 @@ export function SelectionPopover({
     (showColors && actionRowHeight ? GAP : 0);
   const popoverWidth = Math.min(
     Math.max(actionRowWidth, colorRowWidth + POPOVER_PADDING * 2),
-    SCREEN_WIDTH - POPOVER_MARGIN * 2,
+    screenWidth - POPOVER_MARGIN * 2,
   );
 
   const position = useMemo(() => {
@@ -132,25 +127,26 @@ export function SelectionPopover({
 
     const x = Math.max(
       POPOVER_MARGIN,
-      Math.min(selCenterX - popoverWidth / 2, SCREEN_WIDTH - popoverWidth - POPOVER_MARGIN),
+      Math.min(selCenterX - popoverWidth / 2, screenWidth - popoverWidth - POPOVER_MARGIN),
     );
 
     let y: number;
     const yAbove = selTop - popoverHeight - SELECTION_HANDLE_CLEARANCE;
     const yBelow = selBottom + SELECTION_HANDLE_CLEARANCE;
     const aboveValid = yAbove >= SAFE_TOP;
-    const belowValid = yBelow + popoverHeight + POPOVER_MARGIN <= SCREEN_HEIGHT - SAFE_BOTTOM;
+    const belowValid = yBelow + popoverHeight + POPOVER_MARGIN <= screenHeight - SAFE_BOTTOM;
+    const maxY = Math.max(SAFE_TOP, screenHeight - popoverHeight - SAFE_BOTTOM);
 
     if (aboveValid) {
       y = yAbove;
     } else if (belowValid) {
       y = yBelow;
     } else {
-      y = Math.max(SAFE_TOP, Math.min(yBelow, SCREEN_HEIGHT - popoverHeight - POPOVER_MARGIN));
+      y = Math.max(SAFE_TOP, Math.min(yBelow, maxY));
     }
 
     return { x, y };
-  }, [selection.position, popoverWidth, popoverHeight]);
+  }, [screenHeight, screenWidth, selection.position, popoverWidth, popoverHeight]);
 
   const handleCopy = useCallback(() => {
     Clipboard.setStringAsync(selection.text);
@@ -271,7 +267,6 @@ export function SelectionPopover({
               <Volume2Icon size={18} color={colors.foreground} />
             </TouchableOpacity>
           )}
-
         </View>
       </View>
 

@@ -1031,6 +1031,39 @@ describe("fallback content tools", () => {
     expect(result.cfi).toBe("epubcfi(/6/2!/4/4)");
   });
 
+  it("resolves a fallback citation when the model abbreviates the quote with an ellipsis", async () => {
+    registerFallbackChapters([
+      {
+        index: 11,
+        title: "重游泰国",
+        content:
+          "找人帮忙代填表格，结果第一道填错了，中间还重新排了一次队。工作人员告知，签证需要6~8个工作日才能办下来。",
+        segments: [
+          {
+            text: "找人帮忙代填表格，结果第一道填错了，中间还重新排了一次队。工作人员告知，签证需要6~8个工作日才能办下来。",
+            cfi: "epubcfi(/6/24!/4/8)",
+          },
+        ],
+      },
+    ]);
+    vi.mocked(getChunks).mockResolvedValue([]);
+
+    const tools = getAvailableTools({ bookId: "book-1", isVectorized: false, enabledSkills: [] });
+    const tool = findTool(tools, "addCitation");
+    const result = (await tool.execute({
+      citationIndex: 1,
+      chapterTitle: "重游泰国",
+      chapterIndex: 11,
+      cfi: "",
+      quotedText:
+        "找人帮忙代填表格，结果第一道填错了……工作人员告知，签证需要6-8个工作日才能办下来。",
+      reasoning: "fallback source",
+    })) as any;
+
+    expect(result.type).toBe("citation");
+    expect(result.cfi).toBe("epubcfi(/6/24!/4/8)");
+  });
+
   it("rejects fallback citations that cannot be resolved", async () => {
     registerFallbackChapters();
     vi.mocked(getChunks).mockResolvedValue([]);

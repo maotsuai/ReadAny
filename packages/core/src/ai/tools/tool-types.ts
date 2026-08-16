@@ -7,6 +7,7 @@ export interface ToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, ToolParameter>;
+  timeoutMs?: number;
   execute: (args: Record<string, unknown>, context?: ToolExecutionContext) => Promise<unknown>;
 }
 

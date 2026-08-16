@@ -40,7 +40,10 @@ export async function getFallbackChaptersForBook(
 }
 
 export function normalizeForLookup(value: string): string {
-  return value.toLowerCase().replace(/\s+/g, "").trim();
+  return value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]/gu, "")
+    .trim();
 }
 
 function normalizeForTerms(value: string): string {
@@ -55,6 +58,17 @@ function getQuoteNeedles(quotedText: string): string[] {
   if (normalized.length > 80) needles.push(normalized.slice(0, 80));
   if (normalized.length > 40) needles.push(normalized.slice(0, 40));
   if (normalized.length > 24) needles.push(normalized.slice(-40));
+
+  // Models often shorten a quote with an ellipsis. Match the substantial
+  // fragments on either side instead of requiring the omitted text to be
+  // adjacent in the source paragraph.
+  for (const fragment of quotedText.split(/(?:…{1,}|\.{3,})/u)) {
+    const normalizedFragment = normalizeForLookup(fragment);
+    if (normalizedFragment.length >= 8) {
+      needles.push(normalizedFragment);
+      if (normalizedFragment.length > 40) needles.push(normalizedFragment.slice(0, 40));
+    }
+  }
 
   return Array.from(new Set(needles.filter((needle) => needle.length >= 8)));
 }
