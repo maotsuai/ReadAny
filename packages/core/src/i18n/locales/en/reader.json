@@ -46,6 +46,8 @@
     "paginated": "Paginated",
     "scrollMode": "Scroll",
     "paragraphSpacing": "Paragraph Spacing",
+    "justifyBodyText": "Justify body text",
+    "justifyBodyTextDesc": "Align ordinary prose to both page edges",
     "pageMargin": "Page Margin",
     "goBackLocation": "Go Back",
     "noSearchResults": "No results",

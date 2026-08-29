@@ -37,7 +37,7 @@ const TECH_STACK = [
 const LINKS = [
   {
     label: "GitHub",
-    url: "https://github.com/nicepkg/ReadAny",
+    url: "https://github.com/maotsuai/ReadAny",
   },
 ];
 
@@ -154,7 +154,7 @@ export default function AboutScreen() {
               ))}
               <TouchableOpacity
                 style={styles.linkItem}
-                onPress={() => Linking.openURL("https://github.com/nicepkg/ReadAny/issues")}
+                onPress={() => Linking.openURL("https://github.com/maotsuai/ReadAny/issues")}
                 activeOpacity={0.7}
               >
                 <Text style={styles.linkText}>{t("about.feedback", "问题反馈")}</Text>
@@ -163,7 +163,7 @@ export default function AboutScreen() {
             </View>
           </View>
 
-          <Text style={styles.madeBy}>{t("about.madeBy", "Made with love by nicepkg")}</Text>
+          <Text style={styles.madeBy}>{t("about.madeBy", "Made with love by codedogQBY")}</Text>
         </View>
       </ScrollView>
     </SafeAreaView>

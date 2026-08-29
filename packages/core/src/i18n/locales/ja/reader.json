@@ -46,6 +46,8 @@
     "paginated": "ページ送り",
     "scrollMode": "スクロール",
     "paragraphSpacing": "段落間隔",
+    "justifyBodyText": "本文を両端揃え",
+    "justifyBodyTextDesc": "通常の本文をページの両端に揃えます",
     "pageMargin": "ページ余白",
     "goBackLocation": "戻る",
     "noSearchResults": "結果なし",

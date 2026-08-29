@@ -40,6 +40,7 @@ export function ReaderSettingsPanel({ visible, readSettings, bookId, onClose, on
     pageMargin: settingPageMargin,
     viewMode: settingViewMode,
     volumeButtonsPageTurn,
+    smoothReading,
     showTopTitleProgress,
     showBottomTimeBattery,
     followSystemFontScale,
@@ -140,6 +141,40 @@ export function ReaderSettingsPanel({ visible, readSettings, bookId, onClose, on
               </TouchableOpacity>
             </View>
           </View>
+          {/* Body Text Justification */}
+          <View style={s.settingRow}>
+            <View style={s.settingLabelBlock}>
+              <Text style={s.settingLabel}>
+                {t("reader.justifyBodyText", "Justify body text")}
+              </Text>
+              <Text style={s.settingHint}>
+                {t(
+                  "reader.justifyBodyTextDesc",
+                  "Align ordinary prose to both page edges",
+                )}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[
+                s.settingToggleBtn,
+                readSettings.justifyBodyText !== false && s.settingToggleBtnActive,
+              ]}
+              onPress={() =>
+                onUpdateSetting("justifyBodyText", readSettings.justifyBodyText === false)
+              }
+            >
+              <Text
+                style={[
+                  s.settingToggleText,
+                  readSettings.justifyBodyText !== false && s.settingToggleTextActive,
+                ]}
+              >
+                {readSettings.justifyBodyText !== false
+                  ? t("settings.enabled")
+                  : t("settings.disabled")}
+              </Text>
+            </TouchableOpacity>
+          </View>
           {/* Page Margin */}
           <View style={s.settingRow}>
             <Text style={s.settingLabel}>{t("reader.pageMargin", "页边距")}</Text>
@@ -226,6 +261,23 @@ export function ReaderSettingsPanel({ visible, readSettings, bookId, onClose, on
                 </Text>
               </TouchableOpacity>
             </View>
+          </View>
+          {/* Smooth reading: animated page turns + scroll inertia */}
+          <View style={s.settingRow}>
+            <View style={s.settingLabelBlock}>
+              <Text style={s.settingLabel}>{t("settings.smoothReading")}</Text>
+              <Text style={s.settingHint}>
+                {t("settings.smoothReadingDesc", "开启翻页过渡动画与滚动惯性，关闭可提升低性能设备流畅度")}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[s.settingToggleBtn, !!smoothReading && s.settingToggleBtnActive]}
+              onPress={() => onUpdateSetting("smoothReading", !smoothReading)}
+            >
+              <Text style={[s.settingToggleText, !!smoothReading && s.settingToggleTextActive]}>
+                {smoothReading ? t("settings.enabled") : t("settings.disabled")}
+              </Text>
+            </TouchableOpacity>
           </View>
           {Platform.OS === "android" && (
             <View style={s.settingRow}>

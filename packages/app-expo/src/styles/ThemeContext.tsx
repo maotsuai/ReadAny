@@ -7,7 +7,7 @@ import * as SecureStore from "expo-secure-store";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
-export type ThemeMode = "light" | "dark" | "sepia";
+export type ThemeMode = "light" | "dark" | "sepia" | "oled";
 
 export interface ThemeColors {
   background: string;
@@ -107,6 +107,12 @@ const darkColors: ThemeColors = {
   stone500: "#78716c",
 };
 
+// OLED theme — true-black canvas with the existing dark elevated surfaces.
+const oledColors: ThemeColors = {
+  ...darkColors,
+  background: "#000000",
+};
+
 // ── Sepia theme (from [data-theme="sepia"] in globals.css) ──
 const sepiaColors: ThemeColors = {
   background: "#f0e6d2",
@@ -143,6 +149,7 @@ const THEME_MAP: Record<ThemeMode, ThemeColors> = {
   light: lightColors,
   dark: darkColors,
   sepia: sepiaColors,
+  oled: oledColors,
 };
 
 const STORAGE_KEY = "readany-theme";
@@ -172,7 +179,7 @@ export function ThemeProvider({
 
   useEffect(() => {
     SecureStore.getItemAsync(STORAGE_KEY).then((saved) => {
-      if (saved === "light" || saved === "dark" || saved === "sepia") {
+      if (saved === "light" || saved === "dark" || saved === "sepia" || saved === "oled") {
         setModeState(saved);
       }
     });
@@ -187,7 +194,7 @@ export function ThemeProvider({
     mode,
     colors: THEME_MAP[mode],
     setMode,
-    isDark: mode === "dark",
+    isDark: mode === "dark" || mode === "oled",
   };
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
@@ -201,4 +208,4 @@ export function useTheme(): ThemeContextValue {
  * Helper: get the initial theme synchronously for static styles.
  * Components that need reactive theme should use useTheme() instead.
  */
-export { lightColors, darkColors, sepiaColors, THEME_MAP };
+export { lightColors, darkColors, sepiaColors, oledColors, THEME_MAP };

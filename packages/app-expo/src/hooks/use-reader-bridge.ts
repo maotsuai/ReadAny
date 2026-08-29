@@ -1,3 +1,4 @@
+import { useSettingsStore } from "@/stores";
 import type { TOCItem } from "@readany/core/types";
 /**
  * useReaderBridge — encapsulates RN ↔ WebView postMessage communication
@@ -48,11 +49,21 @@ export interface ReaderInitialSettings {
   fontSize?: number;
   lineHeight?: number;
   paragraphSpacing?: number;
+  justifyBodyText?: boolean;
   pageMargin?: number;
   fontTheme?: string;
   useBookFonts?: boolean;
   viewMode?: "paginated" | "scroll";
   paginatedLayout?: "single" | "double";
+  /** Smooth reading: foliate `animated` page-turn + `scroll-inertia` physics */
+  smoothReading?: boolean;
+}
+
+function withJustifiedTextSetting(settings: ReaderInitialSettings = {}): ReaderInitialSettings {
+  return {
+    justifyBodyText: useSettingsStore.getState().readSettings.justifyBodyText !== false,
+    ...settings,
+  };
 }
 
 export interface ReaderBridgeCallbacks {
@@ -136,7 +147,11 @@ export function useReaderBridge(callbacks: ReaderBridgeCallbacks) {
       paginatedLayout?: "single" | "double";
       settings?: ReaderInitialSettings;
     }) => {
-      const msg = JSON.stringify({ type: "openBook", ...params });
+      const msg = JSON.stringify({
+        type: "openBook",
+        ...params,
+        settings: withJustifiedTextSetting(params.settings),
+      });
       inject(`handleCommand(${msg})`);
     },
     [inject],
@@ -267,15 +282,20 @@ export function useReaderBridge(callbacks: ReaderBridgeCallbacks) {
       fontSize?: number;
       lineHeight?: number;
       paragraphSpacing?: number;
+      justifyBodyText?: boolean;
       pageMargin?: number;
       fontTheme?: string;
       useBookFonts?: boolean;
-      viewMode?: string;
+      viewMode?: "paginated" | "scroll";
       paginatedLayout?: "single" | "double";
       customFontFaceCSS?: string;
       customFontFamily?: string;
+      smoothReading?: boolean;
     }) => {
-      const msg = JSON.stringify({ type: "applySettings", settings });
+      const msg = JSON.stringify({
+        type: "applySettings",
+        settings: withJustifiedTextSetting(settings),
+      });
       inject(`handleCommand(${msg})`);
     },
     [inject],
@@ -287,7 +307,7 @@ export function useReaderBridge(callbacks: ReaderBridgeCallbacks) {
       foreground: string;
       muted: string;
       primary?: string;
-      themeMode?: "light" | "dark" | "sepia";
+      themeMode?: "light" | "dark" | "sepia" | "oled";
     }) => {
       const msg = JSON.stringify({ type: "setThemeColors", colors, themeMode: colors.themeMode });
       inject(`handleCommand(${msg})`);

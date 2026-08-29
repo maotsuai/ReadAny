@@ -46,6 +46,8 @@
     "paginated": "Paginé",
     "scrollMode": "Défilement",
     "paragraphSpacing": "Espacement des paragraphes",
+    "justifyBodyText": "Justifier le texte",
+    "justifyBodyTextDesc": "Aligne le texte courant sur les deux bords de la page",
     "pageMargin": "Marge de page",
     "goBackLocation": "Retour",
     "noSearchResults": "Aucun résultat",

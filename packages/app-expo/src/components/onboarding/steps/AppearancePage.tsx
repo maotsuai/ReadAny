@@ -15,7 +15,7 @@ type NavProp = NativeStackNavigationProp<OnboardingStackParamList, "Appearance">
 export function AppearancePage() {
   const { t, i18n } = useTranslation();
   const navigation = useNavigation<NavProp>();
-  const { mode: currentTheme, setMode: setTheme, colors, isDark } = useTheme();
+  const { mode: currentTheme, setMode: setTheme, colors } = useTheme();
   const insets = useSafeAreaInsets();
 
   const handleNext = () => navigation.navigate("AI");
@@ -30,6 +30,11 @@ export function AppearancePage() {
     {
       id: "dark",
       name: t("settings.dark", "Dark"),
+      icon: <Moon size={24} color={colors.foreground} />,
+    },
+    {
+      id: "oled",
+      name: t("settings.oled", "OLED Black"),
       icon: <Moon size={24} color={colors.foreground} />,
     },
     {
@@ -220,9 +225,9 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginBottom: 12,
   },
-  themeGrid: { flexDirection: "row", gap: 8 },
+  themeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   themeBtn: {
-    flex: 1,
+    width: "48%",
     alignItems: "center",
     paddingVertical: 12,
     borderRadius: 12,

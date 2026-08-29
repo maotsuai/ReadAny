@@ -46,6 +46,8 @@
     "paginated": "翻页",
     "scrollMode": "滚动",
     "paragraphSpacing": "段落间距",
+    "justifyBodyText": "正文两端对齐",
+    "justifyBodyTextDesc": "将普通正文与页面两侧对齐",
     "pageMargin": "页边距",
     "goBackLocation": "返回上一位置",
     "noSearchResults": "无结果",

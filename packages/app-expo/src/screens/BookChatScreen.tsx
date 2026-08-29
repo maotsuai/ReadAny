@@ -13,6 +13,7 @@ import {
   Image,
   Keyboard,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -21,6 +22,7 @@ import {
   TouchableWithoutFeedback,
   View,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useStreamingChat } from "@/hooks";
@@ -530,7 +532,12 @@ export function BookChatScreen({ route, navigation }: Props) {
             </View>
           </View>
 
-          <View style={s.content}>
+          <KeyboardAvoidingView
+            style={s.content}
+            behavior="height"
+            enabled={Platform.OS === "android"}
+            keyboardVerticalOffset={insets.top}
+          >
             {selectedText?.trim() ? (
               <View style={s.selectionContext} accessibilityLabel="Selected text context">
                 <Text style={s.selectionContextLabel}>{t("chat.selectedText", "选中文本")}</Text>
@@ -585,7 +592,7 @@ export function BookChatScreen({ route, navigation }: Props) {
               onRemoveQuote={handleRemoveQuote}
               keyboardBottomOffset={insets.bottom}
             />
-          </View>
+          </KeyboardAvoidingView>
         </View>
       </View>
 

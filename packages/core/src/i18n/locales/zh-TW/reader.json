@@ -46,6 +46,8 @@
     "paginated": "翻頁",
     "scrollMode": "捲動",
     "paragraphSpacing": "段落間距",
+    "justifyBodyText": "正文兩端對齊",
+    "justifyBodyTextDesc": "將一般正文與頁面兩側對齊",
     "pageMargin": "頁面邊距",
     "goBackLocation": "返回上一位置",
     "noSearchResults": "無結果",
