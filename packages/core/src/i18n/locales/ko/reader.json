@@ -46,6 +46,8 @@
     "paginated": "페이지 넘기기",
     "scrollMode": "스크롤",
     "paragraphSpacing": "문단 간격",
+    "justifyBodyText": "본문 양쪽 맞춤",
+    "justifyBodyTextDesc": "일반 본문을 페이지 양쪽 가장자리에 맞춥니다",
     "pageMargin": "페이지 여백",
     "goBackLocation": "돌아가기",
     "noSearchResults": "결과 없음",

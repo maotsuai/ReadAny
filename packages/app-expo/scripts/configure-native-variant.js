@@ -3,8 +3,26 @@ const path = require("node:path");
 const { getAppVariantConfig } = require("./app-variant");
 
 const appRoot = path.resolve(__dirname, "..");
-const iosProjectPath = path.join(appRoot, "ios", "ReadAny.xcodeproj", "project.pbxproj");
-const iosInfoPlistPath = path.join(appRoot, "ios", "ReadAny", "Info.plist");
+const iosRoot = path.join(appRoot, "ios");
+
+function findIosNativePaths() {
+  if (!fs.existsSync(iosRoot)) {
+    return null;
+  }
+
+  const projectEntry = fs.readdirSync(iosRoot, { withFileTypes: true }).find(
+    (entry) => entry.isDirectory() && entry.name.endsWith(".xcodeproj"),
+  );
+  if (!projectEntry) {
+    return null;
+  }
+
+  const projectName = projectEntry.name.slice(0, -".xcodeproj".length);
+  return {
+    projectPath: path.join(iosRoot, projectEntry.name, "project.pbxproj"),
+    infoPlistPath: path.join(iosRoot, projectName, "Info.plist"),
+  };
+}
 
 function replaceAll(content, pattern, replacement) {
   pattern.lastIndex = 0;
@@ -15,7 +33,7 @@ function replaceAll(content, pattern, replacement) {
   return content.replace(pattern, replacement);
 }
 
-function syncIosProject(variant) {
+function syncIosProject(variant, iosProjectPath) {
   if (!fs.existsSync(iosProjectPath)) {
     return false;
   }
@@ -35,7 +53,7 @@ function syncIosProject(variant) {
   return true;
 }
 
-function syncIosInfoPlist(variant) {
+function syncIosInfoPlist(variant, iosInfoPlistPath) {
   if (!fs.existsSync(iosInfoPlistPath)) {
     return false;
   }
@@ -67,8 +85,13 @@ function syncIosInfoPlist(variant) {
 
 function main() {
   const variant = getAppVariantConfig();
-  const syncedProject = syncIosProject(variant);
-  const syncedInfoPlist = syncIosInfoPlist(variant);
+  const nativePaths = findIosNativePaths();
+  const syncedProject = nativePaths
+    ? syncIosProject(variant, nativePaths.projectPath)
+    : false;
+  const syncedInfoPlist = nativePaths
+    ? syncIosInfoPlist(variant, nativePaths.infoPlistPath)
+    : false;
 
   if (syncedProject || syncedInfoPlist) {
     console.log(`Synced iOS native variant: ${variant.key} (${variant.bundleIdentifier})`);

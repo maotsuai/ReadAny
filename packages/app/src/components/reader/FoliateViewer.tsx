@@ -2937,19 +2937,28 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
     useEffect(() => {
       const view = viewRef.current;
       if (!view?.renderer) return;
-      if (isFixedLayout) {
-        applyRendererSettings(view, viewSettings, true, appTheme);
-        return;
-      }
-
-      applyReflowLayoutSettings(view, viewSettings);
+      applyRendererSettings(view, viewSettings, isFixedLayout, appTheme);
     }, [
       viewSettings.viewMode,
       viewSettings.paginatedLayout,
       viewSettings.fixedLayoutZoom,
+      viewSettings.pageMargin,
       isFixedLayout,
       appTheme,
     ]);
+
+    // Re-scale the content area when the window resizes (max-inline-size is
+    // computed from renderer.clientWidth at book-open).
+    useEffect(() => {
+      const handleResize = () => {
+        const view = viewRef.current;
+        if (view?.renderer && !isFixedLayout) {
+          applyRendererSettings(view, viewSettings, false, appTheme);
+        }
+      };
+      window.addEventListener("resize", handleResize);
+      return () => window.removeEventListener("resize", handleResize);
+    }, [viewSettings, isFixedLayout, appTheme]);
 
     const handleViewerShellClick = useCallback(
       (event: {
@@ -3265,14 +3274,36 @@ function applyRendererSettings(
     }
     renderer.setAttribute("spread", spreadMode);
   } else {
-    // Reflowable: columns, sizes, margins
+    // Reflowable: columns, sizes, margins.
+    // Foliate's `gap` is a percentage that drives BOTH the outer spacing
+    // (col1/col5 centering + page side padding) and the inner column gutter.
+    // The two pages of a double spread are two columns of ONE iframe, so the
+    // center gutter is the multicol column-gap = effective gap / 2. Solving
+    // gutter = margin and outer = margin + breathing room (paper = 99% of the
+    // window, so the pages never touch the window edges even at margin 0)
+    // yields the formulas below. All against the RENDERER width (foliate
+    // resolves the gap % against it), no rounding → exact geometry.
     const isSinglePage = (settings.paginatedLayout ?? "double") === "single";
-    const rendererWidth = Number(renderer.size || 0);
-    const singlePageInlineSize =
-      rendererWidth > 0 ? Math.round(Math.max(980, Math.min(rendererWidth * 0.94, 1600))) : 1280;
-    renderer.setAttribute("max-inline-size", isSinglePage ? `${singlePageInlineSize}px` : "760px");
+    const windowWidth =
+      renderer.clientWidth || window.innerWidth || document.documentElement?.clientWidth || 1280;
+    const margin = settings.pageMargin ?? 40;
+    const paper = windowWidth * 0.99;
+    if (isSinglePage) {
+      // single: outer = col1 (0.5%H + M/2) + side padding (gap_px/2 = M/2)
+      //         = M + 0.5%H. max-inline = col3 + g·H with col3 = paper − M.
+      const g = margin / paper;
+      const inline = paper - margin + g * windowWidth;
+      renderer.setAttribute("max-inline-size", `${inline}px`);
+      renderer.setAttribute("gap", `${g * 100}%`);
+    } else {
+      // double: gutter = M and col3 = paper − M → g = 2M/(0.99H + M),
+      // max-inline-size = (paper − M + g·H)/2.
+      const g = (2 * margin) / (paper + margin);
+      const doublePageColumnSize = (paper - margin + g * windowWidth) / 2;
+      renderer.setAttribute("max-inline-size", `${doublePageColumnSize}px`);
+      renderer.setAttribute("gap", `${g * 100}%`);
+    }
     renderer.setAttribute("max-block-size", "1440px");
-    renderer.setAttribute("gap", isSinglePage ? "1.2%" : "4.5%");
     applyReflowLayoutSettings(view, settings);
   }
 
@@ -3288,6 +3319,14 @@ function applyReflowLayoutSettings(view: FoliateView, settings: ViewSettings) {
     "max-column-count",
     (settings.paginatedLayout ?? "double") === "single" ? "1" : "2",
   );
+
+  // Vertical page margins (the horizontal ones come from the gap + max-inline
+  // sizing in applyRendererSettings).
+  const margin = settings.pageMargin ?? 40;
+  renderer.setAttribute("margin-top", `${margin}px`);
+  renderer.setAttribute("margin-bottom", `${margin}px`);
+  renderer.setAttribute("margin-left", "0px");
+  renderer.setAttribute("margin-right", "0px");
 
   if (settings.viewMode === "scroll") {
     renderer.setAttribute("flow", "scrolled");

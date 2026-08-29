@@ -957,7 +957,7 @@ export class Paginator extends HTMLElement {
     static observedAttributes = [
         'flow', 'gap', 'margin', 'margin-top', 'margin-bottom', 'margin-left', 'margin-right',
         'max-inline-size', 'max-block-size', 'max-column-count',
-        'no-preload', 'no-background', 'no-continuous-scroll',
+        'no-preload', 'no-background', 'no-continuous-scroll', 'scroll-inertia',
     ]
     #root = this.attachShadow({ mode: 'closed' })
     #observer = new ResizeObserver(() => this.render())
@@ -983,6 +983,11 @@ export class Paginator extends HTMLElement {
     #scrollBounds
     #touchState
     #touchScrolled
+    #scrollInertiaFrame = null
+    #scrollInertiaToken = 0
+    #visibilityHandler = () => {
+        if (document.hidden) this.#cancelScrollInertia()
+    }
     #lastVisibleRange
     #scrollLocked = false
     #isAnimating = false
@@ -1162,6 +1167,7 @@ export class Paginator extends HTMLElement {
         this.#footer = this.#root.getElementById('footer')
 
         this.#observer.observe(this.#container)
+        document.addEventListener('visibilitychange', this.#visibilityHandler)
         const debouncedScroll = debounce(() => {
             if (this.scrolled && !this.#isAnimating) {
                 // Skip entirely while stabilizing — preserve #justAnchored
@@ -1238,10 +1244,12 @@ export class Paginator extends HTMLElement {
         this.addEventListener('touchstart', this.#onTouchStart.bind(this), opts)
         this.addEventListener('touchmove', this.#onTouchMove.bind(this), opts)
         this.addEventListener('touchend', this.#onTouchEnd.bind(this))
+        this.addEventListener('touchcancel', this.#onTouchCancel.bind(this))
         this.addEventListener('load', ({ detail: { doc } }) => {
             doc.addEventListener('touchstart', this.#onTouchStart.bind(this), opts)
             doc.addEventListener('touchmove', this.#onTouchMove.bind(this), opts)
             doc.addEventListener('touchend', this.#onTouchEnd.bind(this))
+            doc.addEventListener('touchcancel', this.#onTouchCancel.bind(this))
         })
 
         this.addEventListener('relocate', ({ detail }) => {
@@ -1629,6 +1637,7 @@ export class Paginator extends HTMLElement {
         return this.#primaryIndex
     }
     setAttribute(name, value) {
+        if (name === 'flow') this.#cancelScrollInertia()
         // The scrolled-mode scroll handler is debounced, so #anchor and
         // #primaryIndex can lag behind the user's actual viewport by up to
         // ~250ms. Toggling out of scrolled mode within that window made
@@ -1655,6 +1664,13 @@ export class Paginator extends HTMLElement {
                 this.render()
                 break
             case 'gap':
+                // percentage (e.g. "7%"); sets --_gap which drives the column
+                // gap, the per-page side padding and the outer spacing. (This
+                // was previously conflated with `margin`, so --_gap never got
+                // updated from the attribute and stayed at its 7% default.)
+                this.#top.style.setProperty('--_gap', value)
+                this.render()
+                break
             case 'margin':
                 this.#top.style.setProperty('--_margin-top', value)
                 this.#top.style.setProperty('--_margin-right', value)
@@ -1682,6 +1698,9 @@ export class Paginator extends HTMLElement {
                         if (i !== this.#primaryIndex) this.#destroyView(i)
                     }
                 }
+                break
+            case 'scroll-inertia':
+                if (value === null) this.#cancelScrollInertia()
                 break
         }
     }
@@ -2011,6 +2030,7 @@ export class Paginator extends HTMLElement {
     }
     set navigationLocked(value) {
         this.#navigationLocked = !!value
+        if (this.#navigationLocked) this.#cancelScrollInertia()
     }
     get noPreload() {
         return this.hasAttribute('no-preload')
@@ -2136,6 +2156,7 @@ export class Paginator extends HTMLElement {
         this.#scrollToPage(page, 'snap')
     }
     #onTouchStart(e) {
+        this.#cancelScrollInertia()
         if (this.#navigationLocked) return
         const contents = this.getContents?.() ?? []
         for (const { doc } of contents) {
@@ -2149,6 +2170,8 @@ export class Paginator extends HTMLElement {
             vx: 0, xy: 0,
             dx: 0, dy: 0,
             dt: 0,
+            scrollVelocity: 0,
+            scrollSamples: [],
             startX: touch?.screenX,
             startY: touch?.screenY,
             didPreventDefault: false,
@@ -2180,12 +2203,17 @@ export class Paginator extends HTMLElement {
 
         const dx = state.x - x
         const dy = state.y - y
+        const dt = Math.max(1, e.timeStamp - state.t)
         state.x = x
         state.y = y
         state.t = e.timeStamp
 
         const delta = this.#vertical ? -dx : dy
         if (Math.abs(delta) < 0.5) return
+
+        state.scrollVelocity = delta / dt
+        state.scrollSamples.push({ velocity: state.scrollVelocity, time: e.timeStamp })
+        if (state.scrollSamples.length > 5) state.scrollSamples.shift()
 
         e.preventDefault()
         this.#touchScrolled = true
@@ -2269,7 +2297,11 @@ export class Paginator extends HTMLElement {
 
         if (!this.#touchScrolled) return
         this.#touchScrolled = false
-        if (this.scrolled || this.#navigationLocked) return
+        if (this.scrolled) {
+            if (!this.#navigationLocked) this.#startScrollInertia(this.#touchState)
+            return
+        }
+        if (this.#navigationLocked) return
         if (this.hasAttribute('no-swipe')) return
 
         // XXX: Firefox seems to report scale as 1... sometimes...?
@@ -2281,6 +2313,66 @@ export class Paginator extends HTMLElement {
                 this.snap(vx, vy, dx, dy, dt)
             }
         })
+    }
+    #onTouchCancel() {
+        this.#cancelScrollInertia()
+        this.#touchState = null
+        this.#touchScrolled = false
+    }
+    #cancelScrollInertia() {
+        this.#scrollInertiaToken += 1
+        if (this.#scrollInertiaFrame !== null) {
+            cancelAnimationFrame(this.#scrollInertiaFrame)
+            this.#scrollInertiaFrame = null
+        }
+    }
+    #startScrollInertia(state) {
+        if (!this.scrolled || !this.hasAttribute('scroll-inertia') || document.hidden) return
+        const samples = state?.scrollSamples || []
+        if (!samples.length) return
+        const recent = samples.slice(-3)
+        const velocity = recent.reduce((sum, sample) => sum + sample.velocity, 0) / recent.length
+        if (!Number.isFinite(velocity) || Math.abs(velocity) < 0.02) return
+
+        this.#cancelScrollInertia()
+        const token = this.#scrollInertiaToken
+        const startedAt = performance.now()
+        let previousTime = startedAt
+        let currentVelocity = velocity
+        const frictionTau = 325
+        const minVelocity = 0.015
+        const maxDuration = 900
+
+        const finish = () => {
+            if (token !== this.#scrollInertiaToken) return
+            this.#scrollInertiaFrame = null
+            this.#afterScroll('scroll')
+        }
+        const step = now => {
+            if (token !== this.#scrollInertiaToken) return
+            if (document.hidden || !this.scrolled) return finish()
+            const elapsed = now - startedAt
+            const dt = Math.min(32, Math.max(1, now - previousTime))
+            previousTime = now
+            currentVelocity *= Math.exp(-dt / frictionTau)
+            if (elapsed >= maxDuration || Math.abs(currentVelocity) < minVelocity) return finish()
+
+            const delta = currentVelocity * dt
+            const before = this.containerPosition
+            if (this.#vertical) this.scrollBy(0, delta)
+            else this.scrollBy(delta, 0)
+            const moved = Math.abs(this.containerPosition - before)
+            if (moved < 0.01) {
+                const forward = this.#vertical ? delta < 0 : delta > 0
+                if (Math.abs(delta) > 2) {
+                    if (forward && !this.atEnd) void this.next()
+                    else if (!forward && !this.atStart) void this.prev()
+                }
+                return finish()
+            }
+            this.#scrollInertiaFrame = requestAnimationFrame(step)
+        }
+        this.#scrollInertiaFrame = requestAnimationFrame(step)
     }
     // allows one to process rects as if they were LTR and horizontal
     #getRectMapper(view) {
@@ -2328,6 +2420,7 @@ export class Paginator extends HTMLElement {
         return this.#scrollToPage(page, reason)
     }
     async #scrollTo(offset, reason, smooth) {
+        this.#cancelScrollInertia()
         const { size } = this
         if (this.containerPosition === offset) {
             this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
@@ -2912,6 +3005,7 @@ export class Paginator extends HTMLElement {
         }
     }
     async goTo(target) {
+        this.#cancelScrollInertia()
         if (this.#locked) return
         const resolved = await target
         if (this.#canGoToIndex(resolved.index)) return this.#goTo(resolved)
@@ -2961,6 +3055,7 @@ export class Paginator extends HTMLElement {
             if (this.sections[index]?.linear !== 'no') return index
     }
     async #turnPage(dir, distance) {
+        this.#cancelScrollInertia()
         if (this.#locked) return
         this.#locked = true
         const prev = dir === -1
@@ -3054,7 +3149,9 @@ export class Paginator extends HTMLElement {
         this.#primaryView?.destroyLoupe()
     }
     destroy() {
+        this.#cancelScrollInertia()
         this.#observer.unobserve(this)
+        document.removeEventListener('visibilitychange', this.#visibilityHandler)
         this.#destroyAllViews()
         this.#mediaQuery.removeEventListener('change', this.#mediaQueryListener)
     }

@@ -25,6 +25,7 @@ import {
 } from "@readany/core/rag";
 import { setPlatformService } from "@readany/core/services";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { setTheme as setTauriTheme } from "@tauri-apps/api/app";
 import { TauriPlatformService } from "./lib/platform/tauri-platform-service";
 import { registerDesktopFallbackContentProvider } from "./lib/rag/fallback-content-provider";
 import { syncLegacyDesktopLibraryRootConfig } from "./lib/storage/desktop-library-root";
@@ -34,6 +35,19 @@ import { flushAllWrites } from "./stores/persist";
 import { useVectorModelStore } from "./stores/vector-model-store";
 
 installFeedbackLogCapture();
+
+// Keep the WebView color scheme in sync with the app theme so book CSS that
+// relies on light-dark() / @media(prefers-color-scheme) follows the app theme
+// instead of the OS scheme (e.g. sepia maps to a light scheme, so borders/text
+// in light-mode colors stay visible instead of the OS dark-mode colors).
+function syncSystemTheme() {
+  const theme = document.documentElement.getAttribute("data-theme");
+  void setTauriTheme(theme === "dark" ? "dark" : "light").catch(() => {});
+}
+new MutationObserver(syncSystemTheme).observe(document.documentElement, {
+  attributes: true,
+  attributeFilter: ["data-theme"],
+});
 
 const FEEDBACK_WORKER_FALLBACK = "https://feedback.readany.top";
 const feedbackWorkerUrl =
@@ -127,6 +141,10 @@ i18nReady.then(async () => {
     // Default to sepia theme
     document.documentElement.setAttribute("data-theme", "sepia");
   }
+
+  // Apply the restored theme to the WebView color scheme (observer above also
+  // keeps it in sync on any later theme switch).
+  syncSystemTheme();
 
   // Restore saved language from platform KV storage
   initI18nLanguage().catch(console.error);

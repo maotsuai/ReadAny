@@ -89,6 +89,7 @@ export interface ViewSettings {
   fixedLayoutZoom?: number; // relative zoom multiplier for PDF/CBZ fixed layouts
   pageMargin: number; // px
   paragraphSpacing: number;
+  justifyBodyText?: boolean; // default true: justify eligible reflowable EPUB body paragraphs
 }
 
 export interface ReadSettings extends ViewSettings {
@@ -96,6 +97,14 @@ export interface ReadSettings extends ViewSettings {
   showBottomTimeBattery: boolean;
   volumeButtonsPageTurn: boolean;
   defaultHighlightColor?: HighlightColor;
+  /**
+   * Mobile-only opt-in: smooth reading — enables the foliate `animated`
+   * page-turn transition and the `scroll-inertia` finger-flick physics.
+   * Default false so existing users keep the current (performance-first)
+   * rendering path. Optional so existing persisted settings deserialize
+   * cleanly.
+   */
+  smoothReading?: boolean;
   /**
    * Mobile-only opt-in: when true, the reader scales fontSize by the OS
    * accessibility font scale (PixelRatio.getFontScale()) before rendering.

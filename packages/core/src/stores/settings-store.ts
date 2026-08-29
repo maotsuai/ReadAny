@@ -53,9 +53,11 @@ const defaultReadSettings: ReadSettings = {
   fixedLayoutZoom: 1,
   pageMargin: 40,
   paragraphSpacing: 16,
+  justifyBodyText: true,
   showTopTitleProgress: true,
   showBottomTimeBattery: true,
   volumeButtonsPageTurn: false,
+  smoothReading: false,
   defaultHighlightColor: "yellow",
   followSystemFontScale: false,
 };
@@ -105,6 +107,15 @@ function migrateSettingsState(state: SettingsState): SettingsState {
       },
     };
   }
+  if (next.readSettings?.justifyBodyText === undefined) {
+    next = {
+      ...next,
+      readSettings: {
+        ...next.readSettings,
+        justifyBodyText: true,
+      },
+    };
+  }
   return next;
 }
 
@@ -131,7 +142,6 @@ async function fetchModelsFromEndpoint(endpoint: AIEndpoint): Promise<string[]> 
       return fetchOllamaModels(endpoint);
     case "lmstudio":
       return fetchLMStudioModels(endpoint);
-    case "openai":
     default:
       return fetchOpenAIModels(endpoint);
   }

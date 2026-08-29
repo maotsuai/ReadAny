@@ -161,6 +161,8 @@
     </div>
   </div>
 
+  <!-- __READANY_JUSTIFIED_TEXT_INSERT_POINT_6c18f4d2__ -->
+
   <script>
     // ═══════════════════════════════════════════════════════════════
     // ReadAny WebView Reader Bridge
@@ -201,10 +203,12 @@
     let currentFontSize = 16;
     let currentLineHeight = 1.6;
     let currentParagraphSpacing = 8;
+    let currentJustifyBodyText = true;
     let currentFontTheme = 'default';
     let currentCustomFontFaceCSS = '';
     let currentCustomFontFamily = '';
     let currentUseBookFonts = true;
+    let currentSmoothReading = false;
     let tapNavigationInFlight = false;
     let tapNavigationResetTimer = null;
     let readerElement = null;
@@ -292,17 +296,29 @@
       }
     }
 
-    function getMobileReflowMaxInlineSize() {
-      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 720;
-      const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 393;
-      return Math.ceil(Math.max(720, viewportHeight, viewportWidth));
-    }
-
     function applyMobileReflowRendererSizing(renderer) {
       if (!renderer) return;
       renderer.setAttribute('max-column-count', '1');
       renderer.setAttribute('max-block-size', '1440px');
-      renderer.setAttribute('max-inline-size', getMobileReflowMaxInlineSize() + 'px');
+    }
+
+    // Mobile is always single-page (no spread), so there is no column gutter to
+    // balance — the foliate gap only contributes the page's internal side
+    // padding. Same derivation as the desktop reader: paper = 99% of the window
+    // (breathing room even at margin 0), outer text inset = margin + 0.5%·H.
+    // All against renderer.clientWidth (foliate resolves the gap % against it).
+    function applyMobileReflowMargins(renderer, margin) {
+      if (!renderer) return;
+      const windowWidth =
+        renderer.clientWidth || window.innerWidth || document.documentElement.clientWidth || 393;
+      const paper = windowWidth * 0.99;
+      const g = margin / paper;
+      renderer.setAttribute('margin-top', margin + 'px');
+      renderer.setAttribute('margin-bottom', margin + 'px');
+      renderer.setAttribute('margin-left', '0px');
+      renderer.setAttribute('margin-right', '0px');
+      renderer.setAttribute('gap', g * 100 + '%');
+      renderer.setAttribute('max-inline-size', paper - margin + g * windowWidth + 'px');
     }
 
     function applyRendererFlowMode(renderer) {
@@ -327,6 +343,21 @@
       } else {
         renderer.removeAttribute('no-continuous-scroll');
         renderer.removeAttribute('flow');
+      }
+    }
+
+    // Smooth reading ("平滑阅读"): one toggle drives both the foliate
+    // `animated` page-turn transition and the `scroll-inertia` finger-flick
+    // physics. The attributes are inert until the renderer handles them, so
+    // this is safe to toggle at any time (load, viewMode change, or live).
+    function syncSmoothReadingAttribute(renderer) {
+      if (!renderer) return;
+      if (currentSmoothReading) {
+        renderer.setAttribute('animated', '');
+        renderer.setAttribute('scroll-inertia', '');
+      } else {
+        renderer.removeAttribute('animated');
+        renderer.removeAttribute('scroll-inertia');
       }
     }
 
@@ -1707,11 +1738,8 @@
         const renderer = el.renderer;
         if (renderer && !el.isFixedLayout) {
           applyMobileReflowRendererSizing(renderer);
-          // Default gap/margin
-          const margin = msg.pageMargin || 16;
-          const gapPercent = Math.max(1, Math.round((margin / 393) * 100));
-          renderer.setAttribute('gap', gapPercent + '%');
-          renderer.setAttribute('margin', margin + 'px');
+          // Default margins (synchronized with the desktop reader formula)
+          applyMobileReflowMargins(renderer, msg.pageMargin || 16);
         } else if (renderer && el.isFixedLayout) {
           const paginatedLayout =
             msg.paginatedLayout === 'single' || msg.paginatedLayout === 'double'
@@ -1798,6 +1826,13 @@
     function applySettings(settings) {
       if (!view || !view.renderer) return;
       const renderer = view.renderer;
+      if (settings.justifyBodyText !== undefined) {
+        currentJustifyBodyText = settings.justifyBodyText !== false;
+      }
+      if (settings.smoothReading !== undefined) {
+        currentSmoothReading = settings.smoothReading === true;
+        syncSmoothReadingAttribute(renderer);
+      }
       // PDF pages are fixed-layout canvases. Reader font, line-height, custom
       // font and paragraph-spacing rules would move the transparent text layer
       // away from the canvas and render a second, misaligned copy of the text.
@@ -1841,7 +1876,7 @@
           settings.paginatedLayout === 'single' ? 'single' : 'double';
       }
 
-      if (settings.fontSize !== undefined || settings.lineHeight !== undefined || settings.fontTheme !== undefined || settings.paragraphSpacing !== undefined
+      if (settings.fontSize !== undefined || settings.lineHeight !== undefined || settings.fontTheme !== undefined || settings.paragraphSpacing !== undefined || settings.justifyBodyText !== undefined
           || settings.customFontFamily !== undefined || settings.customFontFaceCSS !== undefined || settings.useBookFonts !== undefined) {
         const fontThemes = {
           default: { cjk: '-apple-system, BlinkMacSystemFont, system-ui, sans-serif', serif: '-apple-system, BlinkMacSystemFont, system-ui, sans-serif' },
@@ -1956,6 +1991,7 @@
         }
         syncReaderOverrideStylesForAllDocs(themedStyles);
         syncCustomFontStylesForAllDocs(currentCustomFontFaceCSS);
+        syncJustifiedTextForAllDocs();
       }
 
       if (settings.pageMargin != null) {
@@ -1965,9 +2001,7 @@
         const BASELINE_FONT_SIZE = 16;
         const layoutScale = currentFontSize / BASELINE_FONT_SIZE;
         const margin = Math.round(settings.pageMargin * layoutScale);
-        const gapPercent = Math.max(1, Math.round((margin / 393) * 100));
-        renderer.setAttribute('gap', gapPercent + '%');
-        renderer.setAttribute('margin', margin + 'px');
+        applyMobileReflowMargins(renderer, margin);
       }
 
       if (view && view.isFixedLayout) {
@@ -2116,6 +2150,19 @@
       }
     }
 
+    function syncJustifiedTextForAllDocs() {
+      const fixedLayout = Boolean(view?.isFixedLayout);
+      for (const content of getRendererContents()) {
+        if (!content?.doc) continue;
+        const unsupportedLayout = fixedLayout || isVerticalDoc(content.doc);
+        globalThis.ReadAnyJustifiedText?.apply(
+          content.doc,
+          currentJustifyBodyText,
+          unsupportedLayout,
+        );
+      }
+    }
+
     function injectCustomFontFace(css) {
       syncCustomFontStylesForDoc(document, css);
       syncCustomFontStylesForAllDocs(css);
@@ -2128,8 +2175,11 @@
       const primary = colors.primary || '#3b82f6';
 
       currentThemeColors = { bg, fg, muted, primary };
-      if (themeMode === 'dark' || themeMode === 'sepia') currentThemeMode = themeMode;
-      else currentThemeMode = 'light';
+      if (themeMode === 'dark' || themeMode === 'oled' || themeMode === 'sepia') {
+        currentThemeMode = themeMode;
+      } else {
+        currentThemeMode = 'light';
+      }
 
       document.documentElement.style.setProperty('--bg', bg);
       document.documentElement.style.setProperty('--fg', fg);
@@ -2164,6 +2214,8 @@
       // Mobile dark theme uses #1c1c1e. Mapping white with invert(0.89)
       // produces approximately #1c1c1c, avoiding a visible page/shell seam.
       dark: 'invert(0.89)',
+      // OLED maps white PDF paper to true black while preserving the dark-page smart skip.
+      oled: 'invert(1)',
       // Numerically tuned (invert->sepia->contrast->brightness) so a white PDF
       // page maps almost exactly to the sepia background #f0e6d2 (rgb 240,230,210).
       sepia: 'invert(0.245) sepia(0.286) contrast(1.328) brightness(1.005)',
@@ -2272,10 +2324,6 @@ html, body {
   background-color: ${bg} !important;
   color: ${fg} !important;
 }
-p, div, span, blockquote, li, dd, dt, h1, h2, h3, h4, h5, h6, td, th, caption, figcaption, label, a {
-  color: inherit !important;
-}
-a { color: ${primary} !important; }
 ::selection { background: rgba(59, 130, 246, 0.3) !important; }
 /* __end_theme_colors__ */`;
       return themeBlock + '\n' + cleaned;
@@ -2408,6 +2456,31 @@ a { color: ${primary} !important; }
       return childStyle.writingMode === 'vertical-rl' || childStyle.writingMode === 'vertical-lr';
     }
 
+    function getColorLuminance(color) {
+      const match = color && color.match(/rgba?\(\s*([\d.]+)[, ]+\s*([\d.]+)[, ]+\s*([\d.]+)/i);
+      if (!match) return 1;
+      const channels = match.slice(1, 4).map((value) => Number(value) / 255);
+      return channels.reduce((sum, channel) => sum + channel, 0) / channels.length;
+    }
+
+    // EPUBs often hard-code black/dark-gray body text. In dark mode, only
+    // brighten simple text leaves with transparent backgrounds; preserve
+    // links, code, media, and nested/colorful markup authored by the book.
+    function compensateDarkText(doc, foreground, background) {
+      const darkTheme = getColorLuminance(background) < 0.35;
+      const candidates = doc.querySelectorAll('p, div, span, li, dd, dt, h1, h2, h3, h4, h5, h6, td, th, caption, figcaption, label');
+      for (const element of candidates) {
+        element.style.removeProperty('--readany-dark-text-color');
+        if (!darkTheme || /^(a|code|pre|kbd|samp)$/i.test(element.tagName)) continue;
+        if (!Array.from(element.childNodes).some((node) => node.nodeType === 3 && node.nodeValue.trim())) continue;
+        const computed = doc.defaultView.getComputedStyle(element);
+        if (computed.backgroundColor !== 'rgba(0, 0, 0, 0)' && computed.backgroundColor !== 'transparent') continue;
+        if (getColorLuminance(computed.color) >= 0.22) continue;
+        element.style.setProperty('--readany-dark-text-color', foreground);
+        element.style.setProperty('color', 'var(--readany-dark-text-color)', 'important');
+      }
+    }
+
     function applyDocStyles(doc) {
       if (currentBookIsPdf) {
         const styleId = '__readany_pdf_styles__';
@@ -2425,6 +2498,11 @@ a { color: ${primary} !important; }
       }
       syncCustomFontStylesForDoc(doc, currentCustomFontFaceCSS);
       const verticalDoc = isVerticalDoc(doc);
+      globalThis.ReadAnyJustifiedText?.apply(
+        doc,
+        currentJustifyBodyText,
+        verticalDoc || Boolean(view?.isFixedLayout),
+      );
       if (!verticalDoc) {
         for (const img of doc.querySelectorAll('img')) {
           img.style.webkitUserDrag = 'none';
@@ -2440,12 +2518,11 @@ a { color: ${primary} !important; }
           -webkit-user-drag: none !important;
           touch-action: manipulation !important;
         }
-        p, div, span, blockquote, li, dd, dt, h1, h2, h3, h4, h5, h6, td, th, caption, figcaption, label { color: inherit !important; }
-        a { color: ${primary} !important; }
         ::selection { background: rgba(250, 204, 21, 0.4) !important; }
         ${verticalDoc ? getVerticalWritingCompatibilityStyles() : ''}
       `;
       doc.head.appendChild(style);
+      compensateDarkText(doc, fg, bg);
       if (lastRendererStyles) {
         const themedStyles = injectThemeIntoStyles(
           lastRendererStyles,

@@ -13,6 +13,7 @@ import {
   Image,
   Keyboard,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -21,6 +22,7 @@ import {
   TouchableWithoutFeedback,
   View,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useStreamingChat } from "@/hooks";
@@ -28,9 +30,9 @@ import { useResponsiveLayout } from "@/hooks/use-responsive-layout";
 import { resolveActiveAIConfig } from "@/lib/ai/resolve-active-ai-config";
 import { useChatStore } from "@/stores/chat-store";
 import { useLibraryStore } from "@/stores/library-store";
-import { useChatReaderStore } from "@readany/core/stores/chat-reader-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { getPlatformService } from "@readany/core/services";
+import { useChatReaderStore } from "@readany/core/stores/chat-reader-store";
 import type { AttachedQuote, CitationPart } from "@readany/core/types";
 import {
   convertToMessageV2,
@@ -501,7 +503,12 @@ export function ChatScreen() {
           </View>
 
           {/* Content */}
-          <View style={s.content}>
+          <KeyboardAvoidingView
+            style={s.content}
+            behavior="height"
+            enabled={Platform.OS === "android"}
+            keyboardVerticalOffset={insets.top}
+          >
             <View style={s.content}>
               {allMessages.length > 0 ? (
                 <MessageList
@@ -528,7 +535,7 @@ export function ChatScreen() {
               isStreaming={isStreaming}
               keyboardBottomOffset={tabBarHeight}
             />
-          </View>
+          </KeyboardAvoidingView>
         </View>
       </View>
 

@@ -265,7 +265,7 @@ export default function App() {
 }
 
 function AppInner() {
-  const { colors, isDark, mode } = useTheme();
+  const { colors, isDark } = useTheme();
   const loadBooks = useLibraryStore((s) => s.loadBooks);
   useUpdateChecker();
   useAutoSync(loadBooks);
@@ -290,7 +290,7 @@ function AppInner() {
       <KeyboardProvider>
         <SafeAreaProvider>
           <NavigationContainer theme={navTheme} ref={navigationRef}>
-            <StatusBar style={mode === "dark" ? "light" : "dark"} />
+            <StatusBar style={isDark ? "light" : "dark"} />
             <RootNavigator />
           </NavigationContainer>
           <UpdateDialog />
