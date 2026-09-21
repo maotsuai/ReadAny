@@ -162,51 +162,179 @@
   </div>
 
   <script>
-(function installReadAnyJustifiedText(root) {
-  const MARKER = "data-readany-justify-body";
-  const STYLE_ID = "__readany_justified_text__";
-  const PRESERVED_ALIGNMENTS = new Set([
+(() => {
+  // packages/core/src/reader/justified-text.ts
+  var BR_CONTAINER_SELECTOR = "p, div, blockquote, dd, li, h1, h2, h3, h4, h5, h6, td, th, section, article, caption, figcaption";
+  var PIN_ATTR = "data-readany-justify-pinned";
+  var ORIGINAL_ATTR = "data-readany-justify-original";
+  var OLD_MARKER = "data-readany-justify-body";
+  var OLD_STYLE_ID = "__readany_justified_text__";
+  var PRESERVED_ALIGNMENTS = /* @__PURE__ */ new Set([
     "center",
     "right",
     "end",
     "-webkit-center",
-    "-webkit-right",
+    "-webkit-right"
   ]);
-  const EXCLUDED_ANCESTORS =
-    "pre, code, kbd, samp, table, caption, figcaption, form, button, input, textarea, select";
-
-  function shouldJustify(paragraph, unsupportedLayout, view) {
-    if (!paragraph || unsupportedLayout || paragraph.querySelector("br")) return false;
-    if (paragraph.closest(EXCLUDED_ANCESTORS)) return false;
-    const alignment = String(view.getComputedStyle(paragraph).textAlign || "").toLowerCase();
-    return !PRESERVED_ALIGNMENTS.has(alignment);
-  }
-
-  function apply(doc, enabled, unsupportedLayout) {
-    if (!doc || !doc.head) return;
-
-    for (const element of doc.querySelectorAll(`[${MARKER}]`)) {
-      element.removeAttribute(MARKER);
+  function detectJustifyCapabilities(view) {
+    const v = view ?? {};
+    let hasLayer = false;
+    try {
+      hasLayer = typeof v.CSSLayerBlockRule !== "undefined";
+    } catch {
+      hasLayer = false;
     }
-    const existingStyle = doc.getElementById(STYLE_ID);
-    if (existingStyle) existingStyle.remove();
-
-    if (!enabled || unsupportedLayout || !doc.defaultView) return;
-
-    for (const paragraph of doc.querySelectorAll("p")) {
-      if (shouldJustify(paragraph, unsupportedLayout, doc.defaultView)) {
-        paragraph.setAttribute(MARKER, "true");
+    const supportsSelector = (condition) => {
+      try {
+        if (!v.CSS || typeof v.CSS.supports !== "function") return true;
+        return Boolean(v.CSS.supports.call(v.CSS, condition));
+      } catch {
+        return true;
+      }
+    };
+    return {
+      hasLayer,
+      hasHas: supportsSelector("selector(:has(> br))"),
+      hasWhere: supportsSelector("selector(:where(p))")
+    };
+  }
+  function buildJustifyCss(caps) {
+    const guard = ":root:not([data-readany-vertical])";
+    const scoped = (baseSelector) => caps.hasLayer ? `${guard} ${baseSelector}` : caps.hasWhere ? `:where(${guard} ${baseSelector})` : `${guard} ${baseSelector}`;
+    const rules = [`${scoped("body")} { text-align: justify; }`];
+    rules.push(
+      `${["html", "body", "p", "li", "blockquote", "dd"].map((t) => scoped(t)).join(", ")} { text-wrap-style: auto !important; }`
+    );
+    if (caps.hasHas) {
+      rules.push(`${scoped("*:has(> br)")} { text-align: start; }`);
+    }
+    const excludeTargets = ["pre", "code", "kbd", "samp", "table", "caption", "figcaption", "form"];
+    rules.push(`${excludeTargets.map((t) => scoped(t)).join(", ")} { text-align: start; }`);
+    return caps.hasLayer ? `@layer readany-justify {
+${rules.map((rule) => `  ${rule}`).join("\n")}
+}` : rules.join("\n");
+  }
+  var JUSTIFY_CSS = buildJustifyCss({
+    hasLayer: true,
+    hasHas: true,
+    hasWhere: true
+  });
+  function collectBrContainers(doc, caps) {
+    if (caps.hasHas) {
+      try {
+        return Array.from(doc.querySelectorAll(`:is(${BR_CONTAINER_SELECTOR}):has(> br)`));
+      } catch {
       }
     }
-
-    const style = doc.createElement("style");
-    style.id = STYLE_ID;
-    style.textContent = `[${MARKER}="true"] { text-align: justify !important; text-justify: inter-word; }`;
-    doc.head.appendChild(style);
+    const candidates = Array.from(doc.querySelectorAll(BR_CONTAINER_SELECTOR));
+    return candidates.filter((candidate) => {
+      const children = candidate.children;
+      for (let i = 0; i < children.length; i++) {
+        if (children[i].tagName === "BR") return true;
+      }
+      return false;
+    });
+  }
+  function isVerticalDoc(doc) {
+    if (!doc.documentElement || !doc.defaultView) return false;
+    const body = doc.body;
+    if (!body) return false;
+    try {
+      const style = doc.defaultView.getComputedStyle(body);
+      if (style.writingMode === "vertical-rl" || style.writingMode === "vertical-lr") {
+        return true;
+      }
+      const firstChild = body.querySelector(":scope > :not([cfi-inert])");
+      if (!firstChild) return false;
+      const childStyle = doc.defaultView.getComputedStyle(firstChild);
+      return childStyle.writingMode === "vertical-rl" || childStyle.writingMode === "vertical-lr";
+    } catch {
+      return false;
+    }
+  }
+  function pinAlignedBrContainers(doc, caps) {
+    for (const el of Array.from(doc.querySelectorAll(`[${OLD_MARKER}]`))) {
+      el.removeAttribute(OLD_MARKER);
+    }
+    doc.getElementById(OLD_STYLE_ID)?.remove();
+    const inheritAlign = (el) => {
+      let cur = el;
+      while (cur) {
+        const al = cur.getAttribute("align")?.toLowerCase();
+        if (al) {
+          if (al === "center") return "center";
+          if (al === "right") return "right";
+          if (al === "left") return "start";
+          if (al === "justify") return "justify";
+        }
+        cur = cur.parentElement;
+      }
+      cur = el;
+      while (cur) {
+        const a = String(doc.defaultView?.getComputedStyle(cur).textAlign || "").toLowerCase();
+        if (a !== "start" && a !== "inherit") return a;
+        cur = cur.parentElement;
+      }
+      return "start";
+    };
+    for (const container of collectBrContainers(doc, caps)) {
+      const align = inheritAlign(container);
+      const pinnedValue = PRESERVED_ALIGNMENTS.has(align) ? align : "start";
+      if (!container.hasAttribute(PIN_ATTR)) {
+        container.setAttribute(
+          ORIGINAL_ATTR,
+          container.style.getPropertyValue("text-align")
+        );
+      }
+      container.style.setProperty("text-align", pinnedValue);
+      container.setAttribute(PIN_ATTR, "");
+    }
+  }
+  function unpinAlignedBrContainers(doc) {
+    if (!doc) return;
+    for (const el of Array.from(doc.querySelectorAll(`[${PIN_ATTR}]`))) {
+      const htmlEl = el;
+      const original = el.getAttribute(ORIGINAL_ATTR) ?? "";
+      if (original) {
+        htmlEl.style.setProperty("text-align", original);
+      } else {
+        htmlEl.style.removeProperty("text-align");
+      }
+      el.removeAttribute(ORIGINAL_ATTR);
+      el.removeAttribute(PIN_ATTR);
+    }
+  }
+  function applyJustifiedText(doc, enabled, unsupportedLayout, caps) {
+    const isUnsupported = unsupportedLayout || isVerticalDoc(doc);
+    if (doc.documentElement) {
+      if (isUnsupported) {
+        doc.documentElement.setAttribute("data-readany-vertical", "");
+      } else {
+        doc.documentElement.removeAttribute("data-readany-vertical");
+      }
+    }
+    if (!enabled || isUnsupported) {
+      unpinAlignedBrContainers(doc);
+      return;
+    }
+    pinAlignedBrContainers(doc, caps ?? detectJustifyCapabilities(doc.defaultView));
+  }
+  function installReadAnyJustifiedText(root) {
+    const target = root ?? {};
+    const view = root;
+    target.ReadAnyJustifiedText = {
+      apply: (doc, enabled, unsupportedLayout) => applyJustifiedText(doc, enabled, unsupportedLayout, detectJustifyCapabilities(view)),
+      getJustifyCss: () => buildJustifyCss(detectJustifyCapabilities(view)),
+      detectJustifyCapabilities: (v) => detectJustifyCapabilities(v ?? view),
+      buildJustifyCss,
+      preserveAlignedBrContainers: (doc) => pinAlignedBrContainers(doc, detectJustifyCapabilities(view)),
+      JUSTIFY_CSS
+    };
   }
 
-  root.ReadAnyJustifiedText = { apply, shouldJustify };
-})(globalThis);
+  // packages/core/src/reader/justified-text-entry.ts
+  installReadAnyJustifiedText(globalThis);
+})();
 
 </script>
 
@@ -2025,6 +2153,7 @@
             height: auto;
           }
           ${getVerticalWritingCompatibilityStyles()}
+          ${currentJustifyBodyText !== false ? (globalThis.ReadAnyJustifiedText?.getJustifyCss?.() ?? globalThis.ReadAnyJustifiedText?.JUSTIFY_CSS ?? '') : ''}
         `;
         lastRendererStyles = baseStyles;
         const themedStyles = injectThemeIntoStyles(
@@ -2033,12 +2162,14 @@
           currentThemeColors.fg,
           currentThemeColors.primary,
         );
+        // Pin author-aligned <br>-containing blocks BEFORE injecting the
+        // justify stylesheet, so getComputedStyle reflects the book's own CSS.
+        syncJustifiedTextForAllDocs();
         if (typeof renderer.setStyles === 'function') {
           renderer.setStyles(themedStyles);
         }
         syncReaderOverrideStylesForAllDocs(themedStyles);
         syncCustomFontStylesForAllDocs(currentCustomFontFaceCSS);
-        syncJustifiedTextForAllDocs();
       }
 
       if (settings.pageMargin != null) {
@@ -2492,7 +2623,6 @@ html, body {
     function isVerticalDoc(doc) {
       const root = doc && doc.documentElement;
       if (!root) return false;
-      if (root.classList.contains('vrtl') || root.classList.contains('vltr')) return true;
       const body = doc.body;
       if (!body || !doc.defaultView) return false;
       const style = doc.defaultView.getComputedStyle(body);
