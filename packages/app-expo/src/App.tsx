@@ -31,6 +31,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { UAProbe } from "@/components/common/UAProbe";
 import { FallbackContentProvider } from "@/components/rag/FallbackContentProvider";
 import { AnimatedSplash } from "@/components/splash/AnimatedSplash";
 import { rnSessionEventSource } from "@/hooks";
@@ -296,6 +297,7 @@ function AppInner() {
           <UpdateDialog />
           <FloatingTTSBubble />
           <FallbackContentProvider />
+          <UAProbe />
         </SafeAreaProvider>
       </KeyboardProvider>
     </GestureHandlerRootView>

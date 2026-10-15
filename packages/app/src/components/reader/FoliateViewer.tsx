@@ -2181,13 +2181,15 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
           viewRef.current?.renderer && typeof viewRef.current.renderer.pages === "number"
             ? viewRef.current.renderer.pages
             : null;
+        // renderer.page is 0-based and renderer.pages is the real page count:
+        // the renderer adds no padding pages around a section.
         const detail: RelocateDetail =
-          rendererPage != null && rendererPages != null && rendererPages > 2
+          rendererPage != null && rendererPages != null && rendererPages > 0
             ? {
                 ...rawDetail,
                 page: {
-                  current: Math.max(1, Math.min(rendererPage, rendererPages - 2)),
-                  total: Math.max(1, rendererPages - 2),
+                  current: Math.min(Math.max(rendererPage + 1, 1), rendererPages),
+                  total: rendererPages,
                 },
               }
             : rawDetail;
@@ -2900,9 +2902,14 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
           view.addEventListener("link", linkHandler);
           setViewReady(true);
 
-          // Navigate to last location or start
+          // Navigate to last location or start.
+          // Fixed-layout books (PDF/CBZ) restore via their fake page CFI
+          // (epubcfi(/6/N)), which the PDF backend's resolveCFI maps back to
+          // the recorded page — same mechanism as annotation navigation.
           if (isFixedLayout) {
-            await view.init({});
+            console.log("[PDFRestore] init lastLocation =", JSON.stringify(lastLocation));
+            await view.init(lastLocation ? { lastLocation } : {});
+            console.log("[PDFRestore] init done, current index =", view.renderer?.index);
           } else if (lastLocation) {
             try {
               await view.init({ lastLocation });
@@ -3447,6 +3454,18 @@ function getRendererStyles(settings: ViewSettings, theme: AppTheme): string {
   // book sets one on html it propagates to body text instead of body being
   // pinned to the reader font by a direct rule. When disabled, force the
   // reader font on html/body and every descendant.
+  //
+  // The monospace rule swaps sides with the same toggle: with book fonts
+  // honored it is zero-specificity (a book's own `pre { font-family: ... }` —
+  // its embedded code font — wins), and when overriding it needs BOTH
+  // !important AND higher specificity, because specificity still breaks ties
+  // between important author declarations: a plain `pre, code, kbd` at (0,0,1)
+  // loses to an authored `body pre { ... !important }` at (0,0,2).
+  // `html body :is(...)` at (0,0,3) outranks both.
+  // Inner code/kbd/samp INSIDE a pre are excluded from the fallback so they
+  // keep INHERITING the book's font from pre (a direct declaration on `code`
+  // would cut the inheritance — `<pre><code>` is the dominant code markup);
+  // standalone inline code still gets the fallback.
   const readerFontOverride =
     settings.useBookFonts === false
       ? `html, body {
@@ -3455,9 +3474,18 @@ function getRendererStyles(settings: ViewSettings, theme: AppTheme): string {
 body *:not(svg):not(svg *):not(math):not(math *):not(pre):not(pre *):not(code):not(code *):not(kbd):not(kbd *):not(samp):not(samp *) {
   font-family: var(--readany-font-family) !important;
 }
+html body :is(pre, code, kbd, samp) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+}
 `
       : `:where(html) {
   font-family: var(--readany-font-family);
+}
+:where(pre, :not(pre) > code, :not(pre) > kbd, :not(pre) > samp) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+:where(pre :is(code, kbd, samp)) {
+  font-family: inherit;
 }
 `;
 
@@ -3481,10 +3509,6 @@ html, body {
 ${readerFontOverride}
 body :not(#__readany_font_size_override):not(svg):not(svg *):not(math):not(math *):not(pre):not(pre *):not(code):not(code *):not(kbd):not(kbd *):not(samp):not(samp *):not(rt):not(rp) {
   font-size: ${settings.fontSize}px !important;
-}
-
-pre, code, kbd, samp {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
 }
 
 /* Line height for text blocks */

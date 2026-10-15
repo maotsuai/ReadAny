@@ -7,7 +7,7 @@ module.exports = {
     owner: "nyansippys-team",
     name: variant.name,
     slug: "readany",
-    version: "1.3.6",
+    version: "1.3.7",
     orientation: "portrait",
     icon: "./assets/icon.png",
     userInterfaceStyle: "automatic",

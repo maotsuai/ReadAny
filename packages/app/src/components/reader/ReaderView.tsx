@@ -309,18 +309,6 @@ function useAutoHideControls(
           rightNavStart,
         });
 
-        if (isFixedLayout && !isVisible) {
-          console.log("[ReaderTap][reader:action]", {
-            bookKey,
-            source,
-            action: "show-controls",
-            fraction,
-            isDoublePage,
-          });
-          showAndScheduleHide();
-          return;
-        }
-
         if (isScrollMode) {
           toggleControls();
           return;
@@ -373,7 +361,6 @@ function useAutoHideControls(
     isDoublePage,
     isScrollMode,
     isFixedLayout,
-    isVisible,
   ]);
 
   // Mouse enter/leave handlers for toolbar area
