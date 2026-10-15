@@ -14,6 +14,13 @@ import type {
 } from "@readany/core/translation/chapter-translator";
 import { cleanText, isTTSFootnoteMarker, shouldSkipTTSNode } from "@readany/core/tts";
 import type { ViewSettings } from "@readany/core/types";
+import {
+  buildJustifyCss,
+  detectJustifyCapabilities,
+  pinAlignedBrContainers,
+  unpinAlignedBrContainers,
+  type JustifyCapabilities,
+} from "@readany/core/reader/justified-text";
 import { Overlayer } from "foliate-js/overlayer.js";
 import { marked } from "marked";
 /**
@@ -42,6 +49,64 @@ const THEME_COLORS: Record<AppTheme, { bg: string; fg: string; link: string }> =
 };
 
 const READER_OVERRIDE_STYLE_ID = "__readany_reader_overrides__";
+
+/**
+ * Justified body text — the full engine lives in core
+ * (packages/core/src/reader/justified-text.ts) and is shared with the mobile
+ * reader WebView: capability fallbacks for @layer/:has-less webviews, CSS
+ * generation (layered / :where()-zeroed / bare per capability set), and the
+ * alignment pinning with original-inline-value restore. This file only adds
+ * the desktop runtime bits: capability memoization for the app's own webview,
+ * and the Client Hints lookup for the full WebView2 build shown in About
+ * (see lib/webview-info.ts).
+ */
+let justifyCapabilitiesCache: JustifyCapabilities | null = null;
+
+function getJustifyCapabilities(): JustifyCapabilities {
+  if (!justifyCapabilitiesCache) {
+    justifyCapabilitiesCache = detectJustifyCapabilities(window);
+  }
+  return justifyCapabilitiesCache;
+}
+
+function getJustifyCss(): string {
+  return buildJustifyCss(getJustifyCapabilities());
+}
+
+function preserveAlignedBrContainers(doc: Document) {
+  pinAlignedBrContainers(doc, getJustifyCapabilities());
+}
+
+/**
+ * Unified per-document justify sync: tag the root so the @layer CSS scopes to
+ * horizontal text, always unpin (clean undo), then pin author-aligned <br>
+ * blocks when justify is on and the layout is supported. Mirrors the mobile
+ * justified-text.js apply().
+ */
+function syncJustifyForDoc(doc: Document, enabled: boolean) {
+  if (!doc) return;
+  // Reuse the reader's existing getDirection (already called on section load)
+  // to detect vertical writing — document-level, per section, matching foliate.
+  const isUnsupported = getDirection(doc).vertical;
+  const root = doc.documentElement;
+  if (root) {
+    if (isUnsupported) {
+      root.setAttribute("data-readany-vertical", "");
+    } else {
+      root.removeAttribute("data-readany-vertical");
+    }
+  }
+  // Idempotent: only unpin when justify is disabled or the layout is
+  // unsupported. When enabled we must NOT unpin first — re-running this on a
+  // later render (after the justify stylesheet is already injected) would
+  // clear a pinned center, and re-reading the alignment would see `start`
+  // (from :has(> br)) instead of the book's center, dropping the alignment.
+  if (!enabled || isUnsupported) {
+    unpinAlignedBrContainers(doc);
+    return;
+  }
+  preserveAlignedBrContainers(doc);
+}
 
 function getAppTheme(): AppTheme {
   if (typeof document === "undefined") return "dark";
@@ -91,10 +156,7 @@ function analyzeCanvasIsLight(canvas: HTMLCanvasElement): boolean {
 }
 
 /** The PDF page canvas is rendered asynchronously (pdf.js); wait until it appears. */
-function waitForPdfPageCanvas(
-  doc: Document,
-  timeoutMs = 5000,
-): Promise<HTMLCanvasElement | null> {
+function waitForPdfPageCanvas(doc: Document, timeoutMs = 5000): Promise<HTMLCanvasElement | null> {
   return new Promise((resolve) => {
     const win = doc.defaultView ?? window;
     const raf =
@@ -906,10 +968,7 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
           isLight = canvas ? analyzeCanvasIsLight(canvas) : true;
           cache.set(index, isLight);
         }
-        doc.documentElement.style.setProperty(
-          "--readany-pdf-filter",
-          isLight ? filter : "none",
-        );
+        doc.documentElement.style.setProperty("--readany-pdf-filter", isLight ? filter : "none");
       },
       [bookKey],
     );
@@ -2096,7 +2155,16 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
           }
         })();
       },
-      [appTheme, bookKey, viewSettings, onLoaded, onSectionLoad, isFixedLayout, format, applyPdfPageThemeFilter],
+      [
+        appTheme,
+        bookKey,
+        viewSettings,
+        onLoaded,
+        onSectionLoad,
+        isFixedLayout,
+        format,
+        applyPdfPageThemeFilter,
+      ],
     );
     const docLoadHandlerRef = useRef(docLoadHandlerImpl);
     docLoadHandlerRef.current = docLoadHandlerImpl;
@@ -2113,13 +2181,15 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
           viewRef.current?.renderer && typeof viewRef.current.renderer.pages === "number"
             ? viewRef.current.renderer.pages
             : null;
+        // renderer.page is 0-based and renderer.pages is the real page count:
+        // the renderer adds no padding pages around a section.
         const detail: RelocateDetail =
-          rendererPage != null && rendererPages != null && rendererPages > 2
+          rendererPage != null && rendererPages != null && rendererPages > 0
             ? {
                 ...rawDetail,
                 page: {
-                  current: Math.max(1, Math.min(rendererPage, rendererPages - 2)),
-                  total: Math.max(1, rendererPages - 2),
+                  current: Math.min(Math.max(rendererPage + 1, 1), rendererPages),
+                  total: rendererPages,
                 },
               }
             : rawDetail;
@@ -2440,6 +2510,9 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
         };
 
         const handlePointerUp = (ev: PointerEvent) => {
+          // Right-click is reserved for context-menu suppression only — never
+          // treat it as a page-turn tap (or any other pointer action).
+          if (ev.button === 2) return;
           // Clicks on links are handled by their own navigation (internal
           // links / footnotes); never treat them as page-turn taps. Use
           // composedPath() with a realm-independent nodeType check: ev.target
@@ -2829,9 +2902,14 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
           view.addEventListener("link", linkHandler);
           setViewReady(true);
 
-          // Navigate to last location or start
+          // Navigate to last location or start.
+          // Fixed-layout books (PDF/CBZ) restore via their fake page CFI
+          // (epubcfi(/6/N)), which the PDF backend's resolveCFI maps back to
+          // the recorded page — same mechanism as annotation navigation.
           if (isFixedLayout) {
-            await view.init({});
+            console.log("[PDFRestore] init lastLocation =", JSON.stringify(lastLocation));
+            await view.init(lastLocation ? { lastLocation } : {});
+            console.log("[PDFRestore] init done, current index =", view.renderer?.index);
           } else if (lastLocation) {
             try {
               await view.init({ lastLocation });
@@ -3088,6 +3166,10 @@ function applyDocumentStyles(
 
   normalizeBrOnlyParagraphs(doc);
   syncRemoteFontStylesInDocument(doc, settings.customFontCssUrls);
+  // Unify justify state: tag vertical/fixed roots, unpin (clean undo), then
+  // pin author-aligned <br> blocks BEFORE the override stylesheet (which
+  // carries the justify fallback) so getComputedStyle sees the book's own CSS.
+  syncJustifyForDoc(doc, settings.justifyBodyText !== false);
   syncReaderOverrideStylesInDocument(doc, getRendererStyles(settings, theme));
 }
 
@@ -3372,6 +3454,18 @@ function getRendererStyles(settings: ViewSettings, theme: AppTheme): string {
   // book sets one on html it propagates to body text instead of body being
   // pinned to the reader font by a direct rule. When disabled, force the
   // reader font on html/body and every descendant.
+  //
+  // The monospace rule swaps sides with the same toggle: with book fonts
+  // honored it is zero-specificity (a book's own `pre { font-family: ... }` —
+  // its embedded code font — wins), and when overriding it needs BOTH
+  // !important AND higher specificity, because specificity still breaks ties
+  // between important author declarations: a plain `pre, code, kbd` at (0,0,1)
+  // loses to an authored `body pre { ... !important }` at (0,0,2).
+  // `html body :is(...)` at (0,0,3) outranks both.
+  // Inner code/kbd/samp INSIDE a pre are excluded from the fallback so they
+  // keep INHERITING the book's font from pre (a direct declaration on `code`
+  // would cut the inheritance — `<pre><code>` is the dominant code markup);
+  // standalone inline code still gets the fallback.
   const readerFontOverride =
     settings.useBookFonts === false
       ? `html, body {
@@ -3380,9 +3474,18 @@ function getRendererStyles(settings: ViewSettings, theme: AppTheme): string {
 body *:not(svg):not(svg *):not(math):not(math *):not(pre):not(pre *):not(code):not(code *):not(kbd):not(kbd *):not(samp):not(samp *) {
   font-family: var(--readany-font-family) !important;
 }
+html body :is(pre, code, kbd, samp) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+}
 `
       : `:where(html) {
   font-family: var(--readany-font-family);
+}
+:where(pre, :not(pre) > code, :not(pre) > kbd, :not(pre) > samp) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+:where(pre :is(code, kbd, samp)) {
+  font-family: inherit;
 }
 `;
 
@@ -3406,10 +3509,6 @@ html, body {
 ${readerFontOverride}
 body :not(#__readany_font_size_override):not(svg):not(svg *):not(math):not(math *):not(pre):not(pre *):not(code):not(code *):not(kbd):not(kbd *):not(samp):not(samp *):not(rt):not(rp) {
   font-size: ${settings.fontSize}px !important;
-}
-
-pre, code, kbd, samp {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
 }
 
 /* Line height for text blocks */
@@ -3461,6 +3560,8 @@ pre {
   white-space: pre-wrap !important;
   tab-size: 2;
 }
+
+${settings.justifyBodyText !== false ? getJustifyCss() : ""}
 `;
 }
 
@@ -3499,6 +3600,12 @@ function applyRendererStyles(
     lineHeight: settings.lineHeight,
   });
   const styles = getRendererStyles(settings, theme);
+  // Always unpin first (restores the book's own cascade when justify is
+  // disabled), then re-pin author-aligned <br>-containing blocks.
+  for (const content of getRendererContents(view)) {
+    const doc = content?.doc as Document | undefined;
+    if (doc) syncJustifyForDoc(doc, settings.justifyBodyText !== false);
+  }
   renderer.setStyles(styles);
   syncReaderOverrideStyles(view, styles);
 }

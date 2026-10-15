@@ -6,9 +6,11 @@ import {
 import { queueBook as queueAutoVectorize } from "@/lib/rag/auto-vectorize-service";
 import {
   type ImportBooksResult,
+  addBookToImportDuplicateIndex,
   createEmptyImportBooksResult,
   createImportDuplicateIndex,
   findDuplicateBookByHash,
+  findImportDuplicate,
 } from "@readany/core";
 import * as db from "@readany/core/db/database";
 import { runWithDbRetry } from "@readany/core/db/write-retry";
@@ -158,12 +160,31 @@ function bytesToBase64(bytes: Uint8Array): string {
 const MOBILE_IMPORT_METADATA_MAX_BYTES = 32 * 1024 * 1024;
 
 async function getMobileFileStat(path: string): Promise<{ size: number; md5?: string }> {
+  let nativeSize: number | undefined;
+  try {
+    const { File } = await import("expo-file-system");
+    const file = new File(path);
+    if (file.exists) {
+      nativeSize = file.size ?? undefined;
+    }
+  } catch {
+    // The legacy API below also accepts content:// URIs.
+  }
+
   const LegacyFileSystem = await import("expo-file-system/legacy");
-  const info = await LegacyFileSystem.getInfoAsync(path);
-  return {
-    size: info.exists && !info.isDirectory ? (info.size ?? 0) : 0,
-    md5: undefined,
-  };
+  try {
+    const info = await LegacyFileSystem.getInfoAsync(path, { md5: true });
+    return {
+      size: nativeSize ?? (info.exists && !info.isDirectory ? (info.size ?? 0) : 0),
+      md5: info.exists && !info.isDirectory ? info.md5 : undefined,
+    };
+  } catch (error) {
+    if (nativeSize !== undefined) {
+      console.warn(`[importBooks] Failed to calculate file hash for ${path}:`, error);
+      return { size: nativeSize };
+    }
+    throw error;
+  }
 }
 
 async function extractMobileImportMetadata(params: {
@@ -311,6 +332,12 @@ async function copyBookToAppData(
   if (sourceBytes) {
     // If bytes are already in memory (e.g. from hash calculation), just write them
     await platform.writeFile(absPath, sourceBytes);
+  } else if (srcPath.startsWith("content://")) {
+    // expo-file-system's new File.copy() currently rejects Android content
+    // URIs. Its legacy native copy streams from ContentResolver without
+    // loading an entire book into the JavaScript heap.
+    const LegacyFileSystem = await import("expo-file-system/legacy");
+    await LegacyFileSystem.copyAsync({ from: srcPath, to: absPath });
   } else {
     // Use expo-file-system File.copy() for OS-level copy (no JS memory)
     const ExpoFS = await import("expo-file-system");
@@ -866,11 +893,11 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
           const platform = getPlatformService();
           const { size: fileSize, md5: fileHash } = await getMobileFileStat(filePath);
 
-          const existingDuplicate = findDuplicateBookByHash(duplicateIndex, fileHash);
-          if (existingDuplicate) {
+          const exactDuplicate = findDuplicateBookByHash(duplicateIndex, fileHash);
+          if (exactDuplicate) {
             result.skippedDuplicates.push({
               name: fileName,
-              existingBook: existingDuplicate,
+              existingBook: exactDuplicate,
             });
             continue;
           }
@@ -881,6 +908,21 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
                 return null;
               })
             : null;
+
+          const likelyDuplicate = deletedMatch
+            ? null
+            : findImportDuplicate(duplicateIndex, {
+                fileHash,
+                name: fileName,
+              });
+          if (likelyDuplicate) {
+            result.skippedDuplicates.push({
+              name: fileName,
+              existingBook: likelyDuplicate,
+            });
+            continue;
+          }
+
           const bookId = deletedMatch?.id ?? generateId();
 
           console.log(
@@ -933,6 +975,22 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
               const converter = new TxtToEpubConverter();
               const conversion = await converter.convertToBytes({ file: txtFile });
 
+              const title = conversion.bookTitle || fileName.replace(/\.\w+$/i, "") || "Untitled";
+              const metadataDuplicate = deletedMatch
+                ? null
+                : findImportDuplicate(duplicateIndex, {
+                    fileHash,
+                    name: fileName,
+                    title,
+                  });
+              if (metadataDuplicate) {
+                result.skippedDuplicates.push({
+                  name: fileName,
+                  existingBook: metadataDuplicate,
+                });
+                continue;
+              }
+
               // Write EPUB bytes directly to final app data location
               await ensureAppSubDir("books");
               const relativePath = `books/${bookId}.epub`;
@@ -941,7 +999,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
 
               // TXT-converted EPUBs have no cover, and title is already known from converter.
               // Skip metadata extraction entirely — saves a full EPUB re-parse.
-              const title = conversion.bookTitle || fileName.replace(/\.\w+$/i, "") || "Untitled";
               const book: Book = {
                 id: bookId,
                 filePath: relativePath,
@@ -986,9 +1043,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
                 await get().addBook(book);
               }
               result.imported.push(book);
-              if (fileHash) {
-                duplicateIndex.byHash.set(fileHash, book);
-              }
+              addBookToImportDuplicateIndex(duplicateIndex, book, fileName);
               console.log(`[importBooks] TXT imported as EPUB: ${title}`);
 
               // Auto-vectorize if enabled. Keep failures isolated so a
@@ -1045,6 +1100,22 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
               const converter = new UmdToEpubConverter((b) => pako.inflate(b));
               const conversion = await converter.convertToBytes({ file: umdFile });
 
+              const title = conversion.bookTitle || fileName.replace(/\.\w+$/i, "") || "Untitled";
+              const metadataDuplicate = deletedMatch
+                ? null
+                : findImportDuplicate(duplicateIndex, {
+                    fileHash,
+                    name: fileName,
+                    title,
+                  });
+              if (metadataDuplicate) {
+                result.skippedDuplicates.push({
+                  name: fileName,
+                  existingBook: metadataDuplicate,
+                });
+                continue;
+              }
+
               await ensureAppSubDir("books");
               const relativePath = `books/${bookId}.epub`;
               const absPath = await resolveAppPath(relativePath);
@@ -1063,7 +1134,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
                 }
               }
 
-              const title = conversion.bookTitle || fileName.replace(/\.\w+$/i, "") || "Untitled";
               const author = conversion.author || "";
               const book: Book = {
                 id: bookId,
@@ -1109,9 +1179,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
                 await get().addBook(book);
               }
               result.imported.push(book);
-              if (fileHash) {
-                duplicateIndex.byHash.set(fileHash, book);
-              }
+              addBookToImportDuplicateIndex(duplicateIndex, book, fileName);
               console.log(`[importBooks] UMD imported as EPUB: ${title}`);
 
               try {
@@ -1138,9 +1206,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
             }
           }
 
-          const { relativePath } = await copyBookToAppData(bookId, ext || "epub", filePath);
-          console.log(`[importBooks] File copied. relativePath: ${relativePath}`);
-
           // Extract metadata (title, author, cover) from book content
           let title = fileName.replace(/\.\w+$/i, "") || "Untitled";
           let author = "";
@@ -1159,6 +1224,21 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
             );
             if (meta.title) title = meta.title;
             if (meta.author) author = meta.author;
+
+            const metadataDuplicate = deletedMatch
+              ? null
+              : findImportDuplicate(duplicateIndex, {
+                  fileHash,
+                  name: fileName,
+                  title,
+                });
+            if (metadataDuplicate) {
+              result.skippedDuplicates.push({
+                name: fileName,
+                existingBook: metadataDuplicate,
+              });
+              continue;
+            }
 
             // Save cover image to app data
             if (meta.coverBytes && meta.coverBytes.length > 0) {
@@ -1180,6 +1260,9 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
           } catch (metaErr) {
             console.warn(`[importBooks] Metadata extraction failed for ${fileName}:`, metaErr);
           }
+
+          const { relativePath } = await copyBookToAppData(bookId, ext || "epub", filePath);
+          console.log(`[importBooks] File copied. relativePath: ${relativePath}`);
 
           console.log(
             `[importBooks] Final book: title="${title}", author="${author}", coverUrl="${coverUrl}"`,
@@ -1227,9 +1310,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
             await get().addBook(book);
           }
           result.imported.push(book);
-          if (fileHash) {
-            duplicateIndex.byHash.set(fileHash, book);
-          }
+          addBookToImportDuplicateIndex(duplicateIndex, book, fileName);
 
           // Auto-vectorize if enabled. Keep failures isolated so a
           // successful import doesn't get reported as a failed import.

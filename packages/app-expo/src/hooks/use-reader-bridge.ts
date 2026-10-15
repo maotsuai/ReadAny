@@ -1,4 +1,5 @@
 import { useSettingsStore } from "@/stores";
+import { useWebviewInfoStore } from "@/stores/webview-info-store";
 import type { TOCItem } from "@readany/core/types";
 /**
  * useReaderBridge — encapsulates RN ↔ WebView postMessage communication
@@ -769,6 +770,15 @@ export function useReaderBridge(callbacks: ReaderBridgeCallbacks) {
           cb.onError?.(msg.message || "Unknown error");
           break;
         case "foliate-loaded":
+          break;
+        case "readany-ua":
+          // reader.html reports its navigator.userAgent once at startup —
+          // Settings → About displays it as the WebView version.
+          if (msg.ua) {
+            useWebviewInfoStore
+              .getState()
+              .setUa(String(msg.ua), msg.fullVersion ? String(msg.fullVersion) : undefined);
+          }
           break;
         case "show-annotation":
           if (msg.value && msg.position) {

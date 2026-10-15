@@ -33,9 +33,11 @@ export { default as i18n, initI18nLanguage, changeAndPersistLanguage } from "./i
 // Import services
 export { WebDavImportService } from "./import/webdav-import-service";
 export {
+  addBookToImportDuplicateIndex,
   createEmptyImportBooksResult,
   createImportDuplicateIndex,
   findDuplicateBookByHash,
+  findImportDuplicate,
   findLikelyDuplicateBook,
   normalizeImportIdentity,
   stripBookExtension,
@@ -76,4 +78,8 @@ export type {
 export { readEpubChapterFromBookFile, readEpubChapterFromDraft } from "./epub/chapter";
 export type { EpubChapterReadResult } from "./epub/chapter";
 export { searchKnowledge } from "./knowledge/search";
-export type { KnowledgeSearchHit, KnowledgeSearchResult, KnowledgeSearchSource } from "./knowledge/search";
+export type {
+  KnowledgeSearchHit,
+  KnowledgeSearchResult,
+  KnowledgeSearchSource,
+} from "./knowledge/search";

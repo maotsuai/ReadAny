@@ -1,13 +1,27 @@
 const { getAppVariantConfig } = require("./scripts/app-variant");
+const { types: bookFileTypes } = require("./book-file-types.json");
 
 const variant = getAppVariantConfig();
+const bookMimeTypes = [...new Set(bookFileTypes.flatMap((type) => type.mimeTypes))];
+const bookTypeIdentifiers = bookFileTypes.map((type) => type.iosTypeIdentifier);
+const importedBookTypeDeclarations = bookFileTypes
+  .filter((type) => type.iosImported)
+  .map((type) => ({
+    UTTypeIdentifier: type.iosTypeIdentifier,
+    UTTypeDescription: `ReadAny ${type.extension.toUpperCase()} Book`,
+    UTTypeConformsTo: ["public.data"],
+    UTTypeTagSpecification: {
+      "public.filename-extension": [type.extension],
+      "public.mime-type": type.mimeTypes,
+    },
+  }));
 
 module.exports = {
   expo: {
     owner: "nyansippys-team",
     name: variant.name,
     slug: "readany",
-    version: "1.3.6",
+    version: "1.3.7",
     orientation: "portrait",
     icon: "./assets/icon.png",
     userInterfaceStyle: "automatic",
@@ -23,6 +37,18 @@ module.exports = {
       buildNumber: "2",
       infoPlist: {
         UIBackgroundModes: ["audio"],
+        CFBundleDocumentTypes: [
+          {
+            CFBundleTypeName: "ReadAny Books",
+            CFBundleTypeRole: "Viewer",
+            LSHandlerRank: "Alternate",
+            LSItemContentTypes: bookTypeIdentifiers,
+          },
+        ],
+        UTImportedTypeDeclarations: importedBookTypeDeclarations,
+        // Keep imported books isolated from their source document. iOS copies
+        // the selected file into ReadAny's Inbox before handing us the URL.
+        LSSupportsOpeningDocumentsInPlace: false,
         NSCameraUsageDescription:
           "ReadAny uses the camera to scan sync and configuration QR codes.",
         NSLocalNetworkUsageDescription:
@@ -49,6 +75,13 @@ module.exports = {
         "android.permission.RECORD_AUDIO",
         "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "android.permission.MODIFY_AUDIO_SETTINGS",
+      ],
+      intentFilters: [
+        {
+          action: "VIEW",
+          category: ["DEFAULT"],
+          data: bookMimeTypes.map((mimeType) => ({ mimeType })),
+        },
       ],
     },
     plugins: [
