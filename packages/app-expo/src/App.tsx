@@ -52,6 +52,7 @@ import TrackPlayer, {
   Capability,
 } from "react-native-track-player";
 
+import { SystemBookOpenHandler } from "@/components/library/SystemBookOpenHandler";
 import { FloatingTTSBubble } from "@/components/tts/FloatingTTSBubble";
 import { UpdateDialog } from "@/components/update/UpdateDialog";
 import { useUpdateChecker } from "@/hooks/use-update-checker";
@@ -61,6 +62,7 @@ import { subscribeRagSearchConfiguration } from "@/lib/rag/configure-search";
 import { MobileSyncAdapter } from "@/lib/sync/sync-adapter-mobile";
 import { RootNavigator } from "@/navigation/RootNavigator";
 import { useLibraryStore } from "@/stores/library-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { ThemeProvider, useTheme } from "@/styles/ThemeContext";
 import { useAutoSync } from "@readany/core/hooks/use-auto-sync";
 
@@ -268,6 +270,9 @@ export default function App() {
 function AppInner() {
   const { colors, isDark } = useTheme();
   const loadBooks = useLibraryStore((s) => s.loadBooks);
+  const libraryLoaded = useLibraryStore((s) => s.isLoaded);
+  const hasCompletedOnboarding = useSettingsStore((s) => s.hasCompletedOnboarding);
+  const [navigationReady, setNavigationReady] = useState(false);
   useUpdateChecker();
   useAutoSync(loadBooks);
 
@@ -290,10 +295,19 @@ function AppInner() {
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.background }}>
       <KeyboardProvider>
         <SafeAreaProvider>
-          <NavigationContainer theme={navTheme} ref={navigationRef}>
+          <NavigationContainer
+            theme={navTheme}
+            ref={navigationRef}
+            onReady={() => setNavigationReady(true)}
+          >
             <StatusBar style={isDark ? "light" : "dark"} />
             <RootNavigator />
           </NavigationContainer>
+          <SystemBookOpenHandler
+            enabled={hasCompletedOnboarding}
+            navigationReady={navigationReady}
+            libraryLoaded={libraryLoaded}
+          />
           <UpdateDialog />
           <FloatingTTSBubble />
           <FallbackContentProvider />

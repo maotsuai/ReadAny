@@ -36,10 +36,7 @@ export function normalizeImportIdentity(value: string): string {
 }
 
 function buildBookNameCandidates(book: Book): string[] {
-  const candidates = [
-    book.meta.title,
-    getPathLeaf(book.filePath),
-  ]
+  const candidates = [book.meta.title, getPathLeaf(book.filePath)]
     .filter(Boolean)
     .map((value) => normalizeImportIdentity(value as string))
     .filter(Boolean);
@@ -92,6 +89,50 @@ export function findLikelyDuplicateBook(
   }
 
   return null;
+}
+
+/**
+ * Prefer an exact hash match. If either side has no comparable hash, fall
+ * back to the normalized filename/title index. Two different known hashes
+ * are never treated as duplicates merely because their names match.
+ */
+export function findImportDuplicate(
+  index: ImportDuplicateIndex,
+  candidate: {
+    fileHash?: string;
+    name?: string;
+    title?: string;
+  },
+): Book | null {
+  const exactMatch = findDuplicateBookByHash(index, candidate.fileHash);
+  if (exactMatch) return exactMatch;
+
+  const likelyMatch = findLikelyDuplicateBook(index, candidate);
+  if (!likelyMatch) return null;
+
+  if (candidate.fileHash && likelyMatch.fileHash && candidate.fileHash !== likelyMatch.fileHash) {
+    return null;
+  }
+
+  return likelyMatch;
+}
+
+/** Add a freshly imported book to an in-flight batch's duplicate index. */
+export function addBookToImportDuplicateIndex(
+  index: ImportDuplicateIndex,
+  book: Book,
+  sourceName?: string,
+): void {
+  if (book.fileHash) {
+    index.byHash.set(book.fileHash, book);
+  }
+
+  const candidates = [...buildBookNameCandidates(book), normalizeImportIdentity(sourceName ?? "")];
+  for (const candidate of candidates) {
+    if (candidate && !index.byName.has(candidate)) {
+      index.byName.set(candidate, book);
+    }
+  }
 }
 
 export function createEmptyImportBooksResult(): ImportBooksResult {

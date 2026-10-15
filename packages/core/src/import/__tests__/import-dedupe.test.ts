@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { Book } from "../../types";
 import {
+  addBookToImportDuplicateIndex,
   createImportDuplicateIndex,
   findDuplicateBookByHash,
+  findImportDuplicate,
   findLikelyDuplicateBook,
   normalizeImportIdentity,
 } from "../import-dedupe";
@@ -53,5 +55,39 @@ describe("import dedupe helpers", () => {
     expect(findLikelyDuplicateBook(index, { name: "Rubbish-Theory.pdf" })).toEqual(existing);
     expect(findLikelyDuplicateBook(index, { title: "Rubbish Theory" })).toEqual(existing);
     expect(findLikelyDuplicateBook(index, { name: "Another Book.epub" })).toBeNull();
+  });
+
+  it("falls back to names when a comparable hash is unavailable", () => {
+    const legacyBook = createBook({ fileHash: undefined });
+    const index = createImportDuplicateIndex([legacyBook]);
+
+    expect(
+      findImportDuplicate(index, {
+        fileHash: "newly-computed-hash",
+        name: "Demo Book.epub",
+      }),
+    ).toEqual(legacyBook);
+  });
+
+  it("does not collapse different known hashes with the same name", () => {
+    const existing = createBook({ fileHash: "old-hash" });
+    const index = createImportDuplicateIndex([existing]);
+
+    expect(
+      findImportDuplicate(index, {
+        fileHash: "new-hash",
+        name: "Demo Book.epub",
+      }),
+    ).toBeNull();
+  });
+
+  it("updates both indexes during a multi-file import batch", () => {
+    const index = createImportDuplicateIndex([]);
+    const imported = createBook({ fileHash: "batch-hash" });
+
+    addBookToImportDuplicateIndex(index, imported, "Original Filename.epub");
+
+    expect(findImportDuplicate(index, { fileHash: "batch-hash" })).toEqual(imported);
+    expect(findImportDuplicate(index, { name: "Original-Filename.pdf" })).toEqual(imported);
   });
 });

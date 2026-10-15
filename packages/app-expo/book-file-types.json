@@ -1,0 +1,70 @@
+{
+  "types": [
+    {
+      "extension": "epub",
+      "mimeTypes": ["application/epub+zip"],
+      "iosTypeIdentifier": "org.idpf.epub-container",
+      "iosImported": false
+    },
+    {
+      "extension": "pdf",
+      "mimeTypes": ["application/pdf"],
+      "iosTypeIdentifier": "com.adobe.pdf",
+      "iosImported": false
+    },
+    {
+      "extension": "mobi",
+      "mimeTypes": ["application/x-mobipocket-ebook"],
+      "iosTypeIdentifier": "com.readany.book.mobi",
+      "iosImported": true
+    },
+    {
+      "extension": "azw",
+      "mimeTypes": ["application/vnd.amazon.ebook", "application/x-mobi8-ebook"],
+      "iosTypeIdentifier": "com.readany.book.azw",
+      "iosImported": true
+    },
+    {
+      "extension": "azw3",
+      "mimeTypes": ["application/vnd.amazon.ebook", "application/x-mobi8-ebook"],
+      "iosTypeIdentifier": "com.readany.book.azw3",
+      "iosImported": true
+    },
+    {
+      "extension": "cbz",
+      "mimeTypes": ["application/vnd.comicbook+zip", "application/x-cbz"],
+      "iosTypeIdentifier": "com.readany.book.cbz",
+      "iosImported": true
+    },
+    {
+      "extension": "cbr",
+      "mimeTypes": ["application/vnd.comicbook-rar", "application/x-cbr"],
+      "iosTypeIdentifier": "com.readany.book.cbr",
+      "iosImported": true
+    },
+    {
+      "extension": "fb2",
+      "mimeTypes": ["application/x-fictionbook+xml"],
+      "iosTypeIdentifier": "com.readany.book.fb2",
+      "iosImported": true
+    },
+    {
+      "extension": "fbz",
+      "mimeTypes": ["application/x-zip-compressed-fb2", "application/x-fb2+zip"],
+      "iosTypeIdentifier": "com.readany.book.fbz",
+      "iosImported": true
+    },
+    {
+      "extension": "txt",
+      "mimeTypes": ["text/plain"],
+      "iosTypeIdentifier": "public.plain-text",
+      "iosImported": false
+    },
+    {
+      "extension": "umd",
+      "mimeTypes": ["application/x-umd"],
+      "iosTypeIdentifier": "com.readany.book.umd",
+      "iosImported": true
+    }
+  ]
+}
