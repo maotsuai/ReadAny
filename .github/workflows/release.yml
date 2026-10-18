@@ -91,7 +91,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Install pnpm
         uses: pnpm/action-setup@v3
@@ -99,26 +99,20 @@ jobs:
           version: 9
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build reader assets
         run: pnpm --filter @readany/app-expo run build:reader
 
-      - name: Setup Expo
-        uses: expo/expo-github-action@v8
-        with:
-          expo-version: latest
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
-
       - name: Build Android APK (Local)
+        working-directory: packages/app-expo
         env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EXPO_PUBLIC_FEEDBACK_WORKER_URL: ${{ secrets.FEEDBACK_WORKER_URL }}
           APP_VARIANT: production
         run: |
           VERSION=${GITHUB_REF_NAME#v}
-          cd packages/app-expo
-          npx eas-cli build --platform android --profile production-apk --local --non-interactive --output=../../ReadAny-${VERSION}.apk
+          pnpm exec eas build --platform android --profile production-apk --local --non-interactive --output="../../ReadAny-${VERSION}.apk"
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v1
