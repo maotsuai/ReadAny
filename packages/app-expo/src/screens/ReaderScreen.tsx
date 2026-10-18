@@ -563,6 +563,11 @@ export function ReaderScreen({ route, navigation }: Props) {
 
   // Reader bridge
   const bridge = useReaderBridge({
+    onFocusSettings: () => setShowSettings(true),
+    onFocusClose: () => {
+      const current = useSettingsStore.getState().readSettings.focusReading;
+      updateReadSettings({ focusReading: { ...current, flashEnabled: false } });
+    },
     onReady: () => {
       setWebViewReady(true);
       bridge.webViewRef.current?.injectJavaScript(`
@@ -1277,6 +1282,17 @@ export function ReaderScreen({ route, navigation }: Props) {
       themeMode,
     });
   }, [themeMode, webViewReady]);
+
+  useEffect(() => {
+    if (!webViewReady || loading) return;
+    bridge.applySettings({ focusReading: readSettings.focusReading });
+  }, [webViewReady, loading, readSettings.focusReading]);
+
+  useEffect(() => {
+    if (!webViewReady) return;
+    const active = isFocused && appActive && !showSettings && !showTTS && !showTOC && !showSearch;
+    bridge.webViewRef.current?.injectJavaScript(`window.setFocusReadingActive?.(${active}); true;`);
+  }, [webViewReady, isFocused, appActive, showSettings, showTTS, showTOC, showSearch]);
 
   // Re-apply font settings when custom fonts or selected font changes
   useEffect(() => {

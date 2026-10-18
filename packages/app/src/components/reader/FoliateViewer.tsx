@@ -1,3 +1,4 @@
+import { useFocusReading } from "@/hooks/reader/useFocusReading";
 import { useBookShortcuts } from "@/hooks/reader/useBookShortcuts";
 import { useFoliateEvents } from "@/hooks/reader/useFoliateEvents";
 import type { FoliateView } from "@/hooks/reader/useFoliateView";
@@ -892,6 +893,7 @@ interface FoliateViewerProps {
   onToggleSearch?: () => void;
   onToggleToc?: () => void;
   onToggleChat?: () => void;
+  onToggleSettings?: () => void;
 }
 
 interface LinkEventDetail {
@@ -930,6 +932,7 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
       onToggleSearch,
       onToggleToc,
       onToggleChat,
+      onToggleSettings,
     },
     ref,
   ) {
@@ -1098,6 +1101,14 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
 
       return () => observer.disconnect();
     }, [viewSettings, isFixedLayout, viewReady, reapplyPdfThemeFilters]);
+
+    useFocusReading({
+      viewRef, containerRef, ready: viewReady, active, bookKey,
+      fixed: isFixedLayout, settings: viewSettings,
+      foreground: THEME_COLORS[appTheme].fg, background: THEME_COLORS[appTheme].bg,
+      readText: () => extractVisibleTextFromView(viewRef.current, containerRef.current),
+      onSettings: onToggleSettings,
+    });
 
     const ttsHighlightKeyRef = useRef<string | null>(null);
 
@@ -3081,7 +3092,7 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
     return (
       <div
         ref={containerRef}
-        className="foliate-viewer h-full w-full focus:outline-none"
+        className="foliate-viewer relative h-full w-full focus:outline-none"
         tabIndex={-1}
         onClick={handleViewerShellClick}
       >

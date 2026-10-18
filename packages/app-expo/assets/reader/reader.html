@@ -163,7 +163,11 @@
 
   <script>
 (() => {
-  // packages/core/src/reader/justified-text.ts
+  var __defProp = Object.defineProperty;
+  var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+  var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+
+  // ../core/src/reader/justified-text.ts
   var BR_CONTAINER_SELECTOR = "p, div, blockquote, dd, li, h1, h2, h3, h4, h5, h6, td, th, section, article, caption, figcaption";
   var PIN_ATTR = "data-readany-justify-pinned";
   var ORIGINAL_ATTR = "data-readany-justify-original";
@@ -332,8 +336,444 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     };
   }
 
-  // packages/core/src/reader/justified-text-entry.ts
+  // ../core/src/reader/focus-reading.ts
+  var DEFAULT_FOCUS_READING = {
+    gradientEnabled: false,
+    gradientColor1: "#355fbe",
+    gradientColor2: "#ac3939",
+    flashEnabled: false,
+    flashInterval: 0.5,
+    flashTextColor: "auto",
+    flashHighlightColor: "#c4473a"
+  };
+  function normalizeFocusReading(value) {
+    const color = (v, fallback) => typeof v === "string" && /^#[\da-f]{6}$/i.test(v) ? v.toLowerCase() : fallback;
+    const interval = value?.flashInterval;
+    return {
+      gradientEnabled: value?.gradientEnabled === true,
+      gradientColor1: color(value?.gradientColor1, DEFAULT_FOCUS_READING.gradientColor1),
+      gradientColor2: color(value?.gradientColor2, DEFAULT_FOCUS_READING.gradientColor2),
+      flashEnabled: value?.flashEnabled === true,
+      flashInterval: typeof interval === "number" && Number.isFinite(interval) ? Math.round(Math.min(2, Math.max(0, interval)) * 10) / 10 : DEFAULT_FOCUS_READING.flashInterval,
+      flashTextColor: color(value?.flashTextColor, "auto"),
+      flashHighlightColor: color(
+        value?.flashHighlightColor,
+        DEFAULT_FOCUS_READING.flashHighlightColor
+      )
+    };
+  }
+  function focusPagePhase(key) {
+    let hash = 2166136261;
+    for (const char of key) hash = Math.imul(hash ^ (char.codePointAt(0) ?? 0), 16777619);
+    return (hash >>> 0) % 997;
+  }
+  function focusGradient(color1, color2, base) {
+    return `repeating-linear-gradient(155deg, ${color1} 0em, ${base} 2em, ${color2} 4em, ${base} 6em, ${color1} 8em)`;
+  }
+  function graphemes(text) {
+    const Segmenter = Intl.Segmenter;
+    if (Segmenter)
+      return Array.from(
+        new Segmenter(void 0, { granularity: "grapheme" }).segment(text),
+        (part) => part.segment
+      );
+    return text.match(
+      /\p{Regional_Indicator}{2}|\P{M}(?:\p{M}|\p{Emoji_Modifier}|[\u{E0020}-\u{E007F}])*(?:\u200D\P{M}(?:\p{M}|\p{Emoji_Modifier}|[\u{E0020}-\u{E007F}])*)*|\p{M}+/gu
+    ) ?? [];
+  }
+  function splitFocusText(text) {
+    const result = [];
+    let buffer = "";
+    let count = 0;
+    let cjk = false;
+    const flush = () => {
+      if (buffer) result.push(buffer);
+      buffer = "";
+      count = 0;
+    };
+    for (const char of graphemes(text)) {
+      const isCjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(char);
+      const word = /[\p{L}\p{N}]/u.test(char);
+      if (word && count && isCjk !== cjk) flush();
+      if (word) cjk = isCjk;
+      buffer += char;
+      count++;
+      if (cjk && count >= 7 || count >= 18 || /[，。！？；、,.!?;:\n]/u.test(char) || !cjk && /\s/u.test(char))
+        flush();
+    }
+    flush();
+    return result.reduce((parts, part) => {
+      if (!/[\p{L}\p{N}\p{S}]/u.test(part) && parts.length) parts[parts.length - 1] += part;
+      else parts.push(part);
+      return parts;
+    }, []);
+  }
+  function focusFragment(text) {
+    const chars = graphemes(text.trim());
+    const eligible = chars.map((char, i) => /[\p{L}\p{N}]/u.test(char) ? i : -1).filter((i) => i >= 0);
+    const index = eligible[Math.min(eligible.length - 1, Math.floor(eligible.length * 0.35))] ?? 0;
+    return {
+      before: chars.slice(0, index).join(""),
+      anchor: chars[index] ?? "",
+      after: chars.slice(index + 1).join("")
+    };
+  }
+
+  // ../core/src/reader/focus-reading-dom.ts
+  var MARKER = "data-readany-focus-text";
+  var STYLE_ID = "readany-focus-gradient";
+  function syncFocusGradient(doc, settings, pageKey = "", foreground = "#222222", background = "#ffffff", enabled = true) {
+    const config = normalizeFocusReading(settings);
+    let sheet = doc.getElementById(STYLE_ID);
+    if (!enabled || !config.gradientEnabled) {
+      sheet?.remove();
+      for (const node of Array.from(doc.querySelectorAll(`[${MARKER}]`))) {
+        node.removeAttribute(MARKER);
+        node.style.removeProperty("--readany-focus-offset");
+      }
+      return;
+    }
+    if (!sheet) {
+      sheet = doc.createElement("style");
+      sheet.id = STYLE_ID;
+      doc.head.append(sheet);
+    }
+    const first = readableFocusColor(config.gradientColor1, background, foreground);
+    const second = readableFocusColor(config.gradientColor2, background, foreground);
+    sheet.textContent = `@supports ((background-clip: text) or (-webkit-background-clip: text)) {
+    [${MARKER}] { background-image: ${focusGradient(first, second, foreground)} !important;
+      background-position: var(--readany-focus-offset) 0 !important;
+      background-clip: text !important; -webkit-background-clip: text !important;
+      color: transparent !important; -webkit-text-fill-color: transparent !important; }
+    [${MARKER}] :is(span, em, strong, b, i, a, ruby) {
+      color: inherit !important; -webkit-text-fill-color: inherit !important; }
+    [${MARKER}] rt { color: ${foreground} !important; -webkit-text-fill-color: ${foreground} !important; }
+    [${MARKER}] ::selection { color: ${foreground}; -webkit-text-fill-color: ${foreground}; background: ${first}40; }
+  }`;
+    const phase = focusPagePhase(pageKey);
+    let index = 0;
+    for (const node of Array.from(doc.querySelectorAll("p, li, blockquote, dd, div"))) {
+      if (!node.textContent?.trim() || node.querySelector("p, li, blockquote, dd, div, button, input, textarea, select, svg, img") || node.closest("pre, code, svg, table, [hidden], [aria-hidden='true']"))
+        continue;
+      node.setAttribute(MARKER, "");
+      node.style.setProperty("--readany-focus-offset", `${(phase + index++ * 137) % 280 / 20}em`);
+    }
+  }
+  function rgb(color) {
+    const hex = color.match(/^#([\da-f]{6})$/i)?.[1];
+    if (hex) return [0, 2, 4].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
+    const values = color.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+    return values?.length === 3 ? values : [255, 255, 255];
+  }
+  function luminance(values) {
+    return values.map((v) => v / 255).map((v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4).reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+  }
+  function readableFocusColor(color, background, foreground) {
+    const start = rgb(color);
+    const end = rgb(foreground);
+    const bg = luminance(rgb(background));
+    for (let step = 0; step <= 20; step++) {
+      const values = start.map((v, i) => Math.round(v + (end[i] - v) * step / 20));
+      const lum = luminance(values);
+      if ((Math.max(lum, bg) + 0.05) / (Math.min(lum, bg) + 0.05) >= 4.5 || step === 20) {
+        return `#${values.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+      }
+    }
+    return foreground;
+  }
+  var FlashReader = class {
+    constructor(options) {
+      this.options = options;
+      __publicField(this, "config", normalizeFocusReading());
+      __publicField(this, "root");
+      __publicField(this, "band");
+      __publicField(this, "before");
+      __publicField(this, "anchor");
+      __publicField(this, "after");
+      __publicField(this, "status");
+      __publicField(this, "play");
+      __publicField(this, "timer");
+      __publicField(this, "playing", false);
+      __publicField(this, "busy", false);
+      __publicField(this, "disposed", false);
+      __publicField(this, "fragments", []);
+      __publicField(this, "index", 0);
+      __publicField(this, "pageKey", "");
+      __publicField(this, "foreground", "#222222");
+      __publicField(this, "background", "#ffffff");
+      __publicField(this, "fontFamily", "serif");
+      __publicField(this, "touchStart", null);
+      __publicField(this, "gestureMoved", false);
+      __publicField(this, "resizeObserver");
+      __publicField(this, "previousFocus");
+      __publicField(this, "pause", () => {
+        this.playing = false;
+        clearTimeout(this.timer);
+        this.timer = void 0;
+        this.render();
+      });
+      __publicField(this, "onKey", (event) => {
+        if (event.target instanceof Element && event.target.closest("input, select, textarea")) return;
+        if (!["ArrowLeft", "ArrowRight", " ", "Escape"].includes(event.key)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === "Escape") this.options.onClose();
+        else if (event.key === " ") this.toggle();
+        else {
+          this.pause();
+          void this.advance(event.key === "ArrowRight" ? 1 : -1);
+        }
+      });
+      __publicField(this, "onTouchStart", (event) => {
+        if (event.touches.length !== 1 || event.target.closest("button")) {
+          this.touchStart = null;
+          return;
+        }
+        this.touchStart = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+      });
+      __publicField(this, "onTouchEnd", (event) => {
+        const start = this.touchStart;
+        this.touchStart = null;
+        if (!start || !event.changedTouches.length) return;
+        const dx = event.changedTouches[0].clientX - start.x;
+        const dy = event.changedTouches[0].clientY - start.y;
+        if (Math.abs(dx) < 40 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
+        event.preventDefault();
+        event.stopPropagation();
+        this.gestureMoved = true;
+        this.pause();
+        void this.advance(dx < 0 ? 1 : -1);
+      });
+      __publicField(this, "onVisibility", () => {
+        if (this.options.host.ownerDocument.hidden) this.pause();
+      });
+      const doc = options.host.ownerDocument;
+      this.previousFocus = doc.activeElement;
+      this.root = doc.createElement("section");
+      this.root.dataset.readanyFlash = "";
+      this.root.tabIndex = -1;
+      this.root.setAttribute("aria-label", options.labels.title);
+      this.root.style.cssText = "position:absolute;inset:0;z-index:12;display:flex;flex-direction:column;justify-content:center;outline:none;overflow:hidden;touch-action:pan-y;";
+      this.root.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (this.gestureMoved) this.gestureMoved = false;
+      });
+      this.root.addEventListener("keydown", this.onKey);
+      this.root.addEventListener("touchstart", this.onTouchStart, { passive: true });
+      this.root.addEventListener("touchend", this.onTouchEnd, { passive: false });
+      doc.addEventListener("visibilitychange", this.onVisibility);
+      const header = doc.createElement("div");
+      header.style.cssText = "position:absolute;top:72px;left:20px;right:20px;display:flex;align-items:center;justify-content:space-between;gap:12px;font:13px system-ui;";
+      const title = doc.createElement("span");
+      title.textContent = options.labels.title;
+      header.append(
+        title,
+        this.button(options.labels.close, () => options.onClose())
+      );
+      this.band = doc.createElement("div");
+      this.band.style.cssText = "position:relative;display:block;width:100%;min-height:140px;padding:30px 12px;border-block:1px solid;box-sizing:border-box;white-space:pre;line-height:1.5;";
+      this.before = doc.createElement("span");
+      this.before.style.cssText = "position:absolute;right:calc(60% + var(--anchor-half, 0px));top:50%;transform:translateY(-50%);text-align:right";
+      this.anchor = doc.createElement("span");
+      this.anchor.style.cssText = "position:absolute;left:40%;top:50%;transform:translate(-50%,-50%);display:inline-block";
+      this.after = doc.createElement("span");
+      this.after.style.cssText = "position:absolute;left:calc(40% + var(--anchor-half, 0px));top:50%;transform:translateY(-50%)";
+      this.band.append(this.before, this.anchor, this.after);
+      for (const edge of ["top", "bottom"]) {
+        const tick = doc.createElement("i");
+        tick.style.cssText = `position:absolute;${edge}:0;left:40%;width:1px;height:14px;background:currentColor;opacity:.65;pointer-events:none;`;
+        tick.dataset.tick = "";
+        this.band.append(tick);
+      }
+      const footer = doc.createElement("div");
+      footer.style.cssText = "position:absolute;bottom:max(76px,env(safe-area-inset-bottom));left:16px;right:16px;display:flex;flex-direction:column;align-items:center;gap:14px;font:12px system-ui;text-align:center;";
+      this.status = doc.createElement("span");
+      this.status.setAttribute("role", "status");
+      const controls = doc.createElement("div");
+      controls.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;justify-content:center;";
+      this.play = this.button(options.labels.play, () => this.toggle());
+      controls.append(
+        this.button(
+          "\u2190",
+          () => {
+            this.pause();
+            void this.advance(-1);
+          },
+          options.labels.previous
+        ),
+        this.play,
+        this.button(
+          "\u2192",
+          () => {
+            this.pause();
+            void this.advance(1);
+          },
+          options.labels.next
+        ),
+        this.button(options.labels.settings, () => {
+          this.pause();
+          options.onSettings();
+        })
+      );
+      const hint = doc.createElement("span");
+      hint.textContent = options.labels.hint;
+      hint.style.opacity = "0.65";
+      footer.append(this.status, controls, hint);
+      this.root.append(header, this.band, footer);
+      options.host.append(this.root);
+      this.root.focus({ preventScroll: true });
+      const Observer = doc.defaultView?.ResizeObserver;
+      if (Observer) {
+        this.resizeObserver = new Observer(() => this.render());
+        this.resizeObserver.observe(this.root);
+      }
+    }
+    button(text, action, label = text) {
+      const button = this.options.host.ownerDocument.createElement("button");
+      button.type = "button";
+      button.textContent = text;
+      button.setAttribute("aria-label", label);
+      button.style.cssText = "appearance:none;background:transparent;color:inherit;border:1px solid currentColor;border-radius:24px;padding:9px 16px;min-height:40px;cursor:pointer;font:inherit;";
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        action();
+      });
+      return button;
+    }
+    update(settings, foreground, background, fontFamily = "serif") {
+      this.config = normalizeFocusReading(settings);
+      this.foreground = foreground;
+      this.background = background;
+      this.fontFamily = fontFamily;
+      this.root.style.background = `rgba(${rgb(background).join(",")},0.90)`;
+      this.band.style.background = background;
+      this.root.style.color = foreground;
+      this.pause();
+      this.refresh();
+    }
+    refresh() {
+      if (this.disposed || this.busy) return;
+      const page = this.options.readPage();
+      if (page.key !== this.pageKey || !this.fragments.length) {
+        this.pageKey = page.key;
+        this.fragments = splitFocusText(page.text).filter((part) => part.trim());
+        this.index = 0;
+      }
+      this.render();
+    }
+    toggle() {
+      if (this.playing) {
+        this.pause();
+        return;
+      }
+      if (this.config.flashInterval === 0 || !this.fragments.length || this.disposed || this.busy)
+        return;
+      this.playing = true;
+      this.render();
+      this.schedule();
+    }
+    schedule() {
+      clearTimeout(this.timer);
+      if (this.playing && this.config.flashInterval > 0 && !this.disposed) {
+        this.timer = setTimeout(() => {
+          void this.advance(1);
+        }, this.config.flashInterval * 1e3);
+      }
+    }
+    async advance(direction) {
+      if (this.busy || this.disposed) return;
+      clearTimeout(this.timer);
+      const next = this.index + direction;
+      if (next >= 0 && next < this.fragments.length) {
+        this.index = next;
+      } else {
+        this.busy = true;
+        const oldKey = this.pageKey;
+        try {
+          await this.options.turnPage(direction === 1 ? "next" : "prev");
+          if (this.disposed) return;
+          const page = this.options.readPage();
+          const fragments = splitFocusText(page.text).filter((part) => part.trim());
+          if (page.key === oldKey || !fragments.length) {
+            this.pause();
+            return;
+          }
+          this.pageKey = page.key;
+          this.fragments = fragments;
+          this.index = direction === 1 ? 0 : fragments.length - 1;
+        } catch {
+          this.pause();
+        } finally {
+          this.busy = false;
+        }
+      }
+      if (this.disposed) return;
+      this.render();
+      this.schedule();
+    }
+    render() {
+      if (!this.status || this.disposed) return;
+      const text = this.fragments[this.index] ?? "";
+      const part = focusFragment(text);
+      this.before.textContent = part.before;
+      this.anchor.textContent = part.anchor;
+      this.after.textContent = part.after;
+      this.band.style.fontFamily = this.fontFamily;
+      const available = Math.max(220, this.root.clientWidth) - 32;
+      this.band.style.fontSize = `${Math.min(58, Math.max(16, available / Math.max(10, Array.from(text).length * 1.7)))}px`;
+      this.band.style.color = this.config.flashTextColor === "auto" ? this.foreground : readableFocusColor(this.config.flashTextColor, this.background, this.foreground);
+      this.band.style.borderColor = `${readableFocusColor(this.foreground, this.background, this.foreground)}60`;
+      this.anchor.style.color = readableFocusColor(
+        this.config.flashHighlightColor,
+        this.background,
+        this.foreground
+      );
+      const bandRect = this.band.getBoundingClientRect();
+      const anchorRect = this.anchor.getBoundingClientRect();
+      this.band.style.setProperty("--anchor-half", `${anchorRect.width / 2}px`);
+      for (const tick of Array.from(this.band.querySelectorAll("[data-tick]")))
+        tick.style.left = `${anchorRect.left - bandRect.left + anchorRect.width / 2}px`;
+      this.play.textContent = this.playing ? this.options.labels.pause : this.options.labels.play;
+      this.play.setAttribute("aria-label", this.play.textContent);
+      this.play.disabled = this.config.flashInterval === 0 || !text;
+      this.play.style.opacity = this.play.disabled ? "0.45" : "1";
+      this.status.textContent = text ? `${this.index + 1} / ${this.fragments.length} \xB7 ${this.config.flashInterval === 0 ? this.options.labels.manual : `${this.config.flashInterval.toFixed(1)} s`}` : this.options.labels.empty;
+    }
+    destroy() {
+      this.pause();
+      this.disposed = true;
+      this.resizeObserver?.disconnect();
+      this.options.host.ownerDocument.removeEventListener("visibilitychange", this.onVisibility);
+      this.root.remove();
+      if (this.previousFocus instanceof HTMLElement && this.previousFocus.isConnected)
+        this.previousFocus.focus({ preventScroll: true });
+    }
+  };
+  async function turnFocusPage(view, turn) {
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        view.removeEventListener("relocate", finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, 2500);
+      view.addEventListener("relocate", finish, { once: true });
+      Promise.resolve().then(turn).catch((error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        view.removeEventListener("relocate", finish);
+        reject(error);
+      });
+    });
+  }
+
+  // ../core/src/reader/justified-text-entry.ts
   installReadAnyJustifiedText(globalThis);
+  Object.assign(globalThis, { ReadAnyFocus: { FlashReader, syncFocusGradient, turnFocusPage, normalizeFocusReading } });
 })();
 
 </script>
@@ -384,6 +824,51 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     let currentCustomFontFamily = '';
     let currentUseBookFonts = true;
     let currentSmoothReading = false;
+    let currentFocusReading = {};
+    let currentFocusLabels = {};
+    let focusReader = null;
+    let focusPageKey = 'initial';
+    let focusReadingActive = true;
+    function syncFocusReading(update) {
+      if (!view || !window.ReadAnyFocus) return;
+      const engine = window.ReadAnyFocus;
+      const config = engine.normalizeFocusReading(currentFocusReading);
+      getRendererContents().forEach(function(content) {
+        if (content.doc) engine.syncFocusGradient(content.doc, config, focusPageKey, currentThemeColors.fg, currentThemeColors.bg, !view.isFixedLayout);
+      });
+      if (!config.flashEnabled) {
+        if (focusReader) focusReader.destroy();
+        focusReader = null;
+        return;
+      }
+      if (!focusReader) {
+        focusReader = new engine.FlashReader({
+          host: document.getElementById('reader-container'),
+          readPage: function() { return { key: focusPageKey, text: doGetVisibleText().text || '' }; },
+          turnPage: function(direction) {
+            return engine.turnFocusPage(view, function() {
+              const distance = view.renderer && view.renderer.scrolled ? getScrollNavigationDistance() : undefined;
+              return direction === 'next' ? view.next(distance) : view.prev(distance);
+            });
+          },
+          onSettings: function() { postToRN('focusSettings', {}); },
+          onClose: function() {
+            currentFocusReading = Object.assign({}, currentFocusReading, { flashEnabled: false });
+            syncFocusReading(true);
+            postToRN('focusClose', {});
+          },
+          labels: currentFocusLabels,
+        });
+        update = true;
+      }
+      if (update) focusReader.update(config, currentThemeColors.fg, currentThemeColors.bg, currentCustomFontFamily || 'serif');
+      else focusReader.refresh();
+      if (!focusReadingActive) focusReader.pause();
+    }
+    window.setFocusReadingActive = function(active) {
+      focusReadingActive = active;
+      if (!active && focusReader) focusReader.pause();
+    };
     let tapNavigationInFlight = false;
     let tapNavigationResetTimer = null;
     let readerElement = null;
@@ -1585,6 +2070,9 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     // ─── Book loading ───
     async function openBook(msg) {
       const container = document.getElementById('reader-container');
+      if (focusReader) focusReader.destroy();
+      focusReader = null;
+      focusPageKey = 'initial';
       const loading = document.getElementById('loading');
       currentBookIsPdf = isPDFBookMessage(msg);
       pdfPageLightCache = {};
@@ -1728,6 +2216,7 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
             applyRendererFlowMode(el.renderer);
           }
           applyDocStyles(doc);
+          window.ReadAnyFocus.syncFocusGradient(doc, currentFocusReading, focusPageKey, currentThemeColors.fg, currentThemeColors.bg, !el.isFixedLayout);
           if (currentBookIsPdf && typeof index === 'number') {
             pdfDocIndexMap.set(doc, index);
             applyPdfPageThemeFilter(doc, index);
@@ -1748,6 +2237,8 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
           markLoaded();
           hideFootnoteTip();
           const detail = e.detail;
+          focusPageKey = detail.cfi || JSON.stringify([detail.section, detail.page, detail.fraction]);
+          syncFocusReading(false);
           const previousSectionIndex = currentSectionIndex;
           if (tapNavigationInFlight) {
             setTimeout(() => {
@@ -2003,6 +2494,8 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     function applySettings(settings) {
       if (!view || !view.renderer) return;
       const renderer = view.renderer;
+      if (settings.focusReading !== undefined) currentFocusReading = settings.focusReading;
+      if (settings.focusLabels) currentFocusLabels = settings.focusLabels;
       if (settings.justifyBodyText !== undefined) {
         currentJustifyBodyText = settings.justifyBodyText !== false;
       }
@@ -2014,6 +2507,7 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
       // font and paragraph-spacing rules would move the transparent text layer
       // away from the canvas and render a second, misaligned copy of the text.
       if (currentBookIsPdf) {
+        syncFocusReading(true);
         if (settings.paginatedLayout !== undefined) {
           currentPaginatedLayout =
             settings.paginatedLayout === 'single' ? 'single' : 'double';
@@ -2226,6 +2720,7 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
         currentViewMode = settings.viewMode;
         applyRendererFlowMode(renderer);
       }
+      syncFocusReading(true);
     }
 
     function getScrollNavigationDistance() {
@@ -2421,6 +2916,7 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
       }
 
       reapplyPdfThemeFilters();
+      syncFocusReading(true);
     }
 
     // ─── PDF theme inversion (dark/sepia) with per-page smart skip ───

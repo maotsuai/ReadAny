@@ -1,3 +1,4 @@
+import { DEFAULT_FOCUS_READING, normalizeFocusReading } from "../reader/focus-reading";
 import { create } from "zustand";
 import type { AIConfig, AIEndpoint, ReadSettings } from "../types";
 import type { TranslationConfig, TranslationTargetLang } from "../types/translation";
@@ -44,6 +45,7 @@ export interface SettingsState {
 }
 
 const defaultReadSettings: ReadSettings = {
+  focusReading: { ...DEFAULT_FOCUS_READING },
   fontSize: 16,
   lineHeight: 1.6,
   fontTheme: "system",
@@ -88,7 +90,13 @@ const defaultAIConfig: AIConfig = {
 };
 
 function migrateSettingsState(state: SettingsState): SettingsState {
-  let next = state;
+  let next = {
+    ...state,
+    readSettings: {
+      ...state.readSettings,
+      focusReading: normalizeFocusReading(state.readSettings?.focusReading),
+    },
+  };
   if (next.aiConfig.maxTokens === 4096) {
     next = {
       ...next,

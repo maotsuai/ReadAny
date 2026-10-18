@@ -76,6 +76,17 @@ export interface FontTheme {
   cjk: string;
 }
 
+export interface FocusReadingSettings {
+  gradientEnabled: boolean;
+  gradientColor1: string;
+  gradientColor2: string;
+  flashEnabled: boolean;
+  /** Seconds per fragment. Zero means manual advance only. */
+  flashInterval: number;
+  flashTextColor: string; // "auto" or #rrggbb
+  flashHighlightColor: string;
+}
+
 export interface ViewSettings {
   fontSize: number; // 12-64
   lineHeight: number; // 1.2-2.5
@@ -90,6 +101,7 @@ export interface ViewSettings {
   pageMargin: number; // px
   paragraphSpacing: number;
   justifyBodyText?: boolean; // default true: justify eligible reflowable EPUB body paragraphs
+  focusReading?: Partial<FocusReadingSettings>;
 }
 
 export interface ReadSettings extends ViewSettings {

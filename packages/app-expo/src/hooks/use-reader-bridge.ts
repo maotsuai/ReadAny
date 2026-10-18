@@ -1,3 +1,6 @@
+import i18n from "@readany/core/i18n";
+import { focusLabels } from "@readany/core/reader/focus-reading";
+import type { FocusReadingSettings } from "@readany/core/types/book";
 import { useSettingsStore } from "@/stores";
 import { useWebviewInfoStore } from "@/stores/webview-info-store";
 import type { TOCItem } from "@readany/core/types";
@@ -47,6 +50,8 @@ export interface VisibleTTSContext {
 }
 
 export interface ReaderInitialSettings {
+  focusReading?: Partial<FocusReadingSettings>;
+  focusLabels?: Record<string, string>;
   fontSize?: number;
   lineHeight?: number;
   paragraphSpacing?: number;
@@ -62,6 +67,8 @@ export interface ReaderInitialSettings {
 
 function withJustifiedTextSetting(settings: ReaderInitialSettings = {}): ReaderInitialSettings {
   return {
+    focusReading: useSettingsStore.getState().readSettings.focusReading,
+    focusLabels: focusLabels((key) => String(i18n.t(key))),
     justifyBodyText: useSettingsStore.getState().readSettings.justifyBodyText !== false,
     ...settings,
   };
@@ -74,6 +81,8 @@ export interface ReaderBridgeCallbacks {
   onSelection?: (detail: SelectionEvent) => void;
   onSelectionCleared?: () => void;
   onTap?: () => void;
+  onFocusSettings?: () => void;
+  onFocusClose?: () => void;
   onSearchResult?: (index: number, count: number) => void;
   onSearchComplete?: (count: number) => void;
   onError?: (message: string) => void;
@@ -280,6 +289,8 @@ export function useReaderBridge(callbacks: ReaderBridgeCallbacks) {
 
   const applySettings = useCallback(
     (settings: {
+      focusReading?: Partial<FocusReadingSettings>;
+      focusLabels?: Record<string, string>;
       fontSize?: number;
       lineHeight?: number;
       paragraphSpacing?: number;
@@ -803,6 +814,12 @@ export function useReaderBridge(callbacks: ReaderBridgeCallbacks) {
           break;
         case "bookmarkSnippet":
           cb.onBookmarkSnippet?.(msg.textSnippet || "");
+          break;
+        case "focusSettings":
+          cb.onFocusSettings?.();
+          break;
+        case "focusClose":
+          cb.onFocusClose?.();
           break;
         case "toggleBookmark":
           cb.onToggleBookmark?.();

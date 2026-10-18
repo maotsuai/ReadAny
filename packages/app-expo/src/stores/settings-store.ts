@@ -9,6 +9,7 @@ import {
   providerRequiresApiKey,
   providerSupportsExactRequestUrl,
 } from "@readany/core/utils/api";
+import { DEFAULT_FOCUS_READING, normalizeFocusReading } from "@readany/core/reader/focus-reading";
 import { create } from "zustand";
 import { deleteSecure, loadSecure, saveSecure, withPersist } from "./persist";
 
@@ -44,6 +45,7 @@ export interface SettingsState {
 }
 
 const defaultReadSettings: ReadSettings = {
+  focusReading: { ...DEFAULT_FOCUS_READING },
   fontSize: 16,
   lineHeight: 1.6,
   fontTheme: "classic",
@@ -85,7 +87,13 @@ const defaultAIConfig: AIConfig = {
 };
 
 function migrateSettingsState(state: SettingsState): SettingsState {
-  let next = state;
+  let next = {
+    ...state,
+    readSettings: {
+      ...state.readSettings,
+      focusReading: normalizeFocusReading(state.readSettings?.focusReading),
+    },
+  };
   if (next.aiConfig.maxTokens === 4096) {
     next = {
       ...next,

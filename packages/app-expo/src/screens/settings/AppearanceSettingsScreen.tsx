@@ -1,3 +1,5 @@
+import { FocusReadingSettings } from "../reader/FocusReadingSettings";
+import { useSettingsStore } from "@/stores/settings-store";
 import { BookOpenIcon, CheckIcon, ChevronDownIcon, MoonIcon, SunIcon } from "@/components/ui/Icon";
 import { useResponsiveLayout } from "@/hooks/use-responsive-layout";
 import { useTheme } from "@/styles/ThemeContext";
@@ -37,6 +39,8 @@ const LANGUAGES = [
 
 export default function AppearanceSettingsScreen() {
   const { t, i18n } = useTranslation();
+  const focusReading = useSettingsStore((state) => state.readSettings.focusReading);
+  const updateReadSettings = useSettingsStore((state) => state.updateReadSettings);
   const { mode, setMode, colors } = useTheme();
   const layout = useResponsiveLayout();
   const [lang, setLang] = useState(() => i18n.language || "en");
@@ -69,6 +73,7 @@ export default function AppearanceSettingsScreen() {
         contentContainerStyle={[s.scrollContent, { alignItems: "center" }]}
       >
         <View style={{ width: "100%", maxWidth: layout.centeredContentWidth, gap: 24 }}>
+          <FocusReadingSettings value={focusReading} onChange={(value) => updateReadSettings({ focusReading: value })} />
           {/* Theme */}
           <View style={s.section}>
             <Text style={[s.sectionTitle, { color: colors.mutedForeground }]}>

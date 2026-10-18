@@ -598,6 +598,37 @@
           "fail": "ReadAny Skill 未安装：{{path}}。"
         }
       }
-    }
+    },
+    "focusTitle": "专注辅助",
+    "focusDesc": "用字色引导视线，也可以一次只读一个短语。",
+    "focusGradient": "渐变字色",
+    "focusGradientDesc": "循环渐变，每页与相邻行错开颜色起点。",
+    "focusFlash": "闪读",
+    "focusFlashDesc": "短语在固定注视点出现，开启后先暂停。",
+    "focusColor1": "强调色 1",
+    "focusColor2": "强调色 2",
+    "focusTextColor": "闪读正文",
+    "focusAnchorColor": "注视字色",
+    "focusInterval": "每个短语停留",
+    "focusManual": "手动",
+    "focusIntervalHint": "0 秒为手动 · 左滑前进 · 右滑回看",
+    "focusPreview": "实时预览",
+    "focusSample": "阅读的节奏，由你决定。沿着字色，轻轻移向下一行。停一停，再继续。",
+    "focusFlashSample": "用自己的节奏阅读。",
+    "focusPlay": "播放",
+    "focusPause": "暂停",
+    "focusClose": "退出闪读",
+    "focusPrevious": "上一个短语",
+    "focusNext": "下一个短语",
+    "focusSettings": "字色与节奏",
+    "focusHint": "左右滑动 · 方向键切换 · 空格暂停",
+    "focusEmpty": "当前页没有可读取的文字，请退出后翻到正文页。",
+    "focusAuto": "跟随主题",
+    "focusClassic": "蓝 / 红",
+    "focusOcean": "海洋",
+    "focusForest": "森林",
+    "focusSunset": "日落",
+    "focusScope": "渐变适用于可重排正文；闪读从当前页开始，读完后继续翻页。",
+    "focusInvalidColor": "请输入 #RRGGBB"
   }
 }

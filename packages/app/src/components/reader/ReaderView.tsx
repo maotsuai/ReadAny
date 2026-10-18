@@ -2975,6 +2975,7 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
                 onShowAnnotation={handleShowAnnotation}
                 onToggleSearch={handleToggleSearch}
                 onToggleToc={handleToggleToc}
+                onToggleSettings={handleToggleSettings}
                 onToggleChat={handleToggleChat}
               />
             ) : isLoading ? (
@@ -3185,7 +3186,7 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
               className="absolute inset-0 z-40 bg-black/20"
               onClick={() => setShowSettings(false)}
             />
-            <div className="absolute top-12 right-2 z-50 w-80 animate-in slide-in-from-top-2 duration-200 rounded-lg border border-border/60 bg-background shadow-lg">
+            <div className="absolute top-12 right-2 z-50 max-h-[calc(100%-4rem)] w-80 overflow-y-auto animate-in slide-in-from-top-2 duration-200 rounded-lg border border-border/60 bg-background shadow-lg">
               <div className="flex items-center justify-between border-b border-border/40 px-4 py-2">
                 <span className="text-xs font-medium">{t("settings.reading_title")}</span>
                 <button

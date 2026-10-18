@@ -8,6 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { FocusReadingSettings } from "./FocusReadingSettings";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { useAppStore } from "@/stores/app-store";
@@ -165,6 +166,8 @@ export function ReadSettingsPanel() {
           </div>
         </div>
       </section>
+
+      <FocusReadingSettings />
 
       {/* Ruby Annotation */}
       <RubySettingsSection />

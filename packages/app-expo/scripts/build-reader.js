@@ -86,6 +86,9 @@ async function buildReader() {
         contents: `
           import { installReadAnyJustifiedText } from "${CORE_READER.replace(/\\/g, "/")}/justified-text";
           installReadAnyJustifiedText(globalThis);
+          import { FlashReader, syncFocusGradient, turnFocusPage } from "${CORE_READER.replace(/\\/g, "/")}/focus-reading-dom";
+          import { normalizeFocusReading } from "${CORE_READER.replace(/\\/g, "/")}/focus-reading";
+          Object.assign(globalThis, { ReadAnyFocus: { FlashReader, syncFocusGradient, turnFocusPage, normalizeFocusReading } });
         `,
         resolveDir: path.resolve(__dirname, "../../core/src/reader"),
         sourcefile: "justified-text-entry.ts",

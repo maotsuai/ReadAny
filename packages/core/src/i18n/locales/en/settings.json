@@ -598,6 +598,37 @@
           "fail": "ReadAny Skill is not installed at {{path}}."
         }
       }
-    }
+    },
+    "focusTitle": "Focus reading",
+    "focusDesc": "A color path for your eyes. One phrase at a time when you need it.",
+    "focusGradient": "Gradient text",
+    "focusGradientDesc": "Repeating colors with a different phase on each page and line.",
+    "focusFlash": "Flash reading",
+    "focusFlashDesc": "Short phrases at a fixed point. Starts paused.",
+    "focusColor1": "Accent 1",
+    "focusColor2": "Accent 2",
+    "focusTextColor": "Flash text",
+    "focusAnchorColor": "Focus character",
+    "focusInterval": "Time per phrase",
+    "focusManual": "Manual",
+    "focusIntervalHint": "0 s = manual · swipe left to advance · swipe right to revisit",
+    "focusPreview": "Live preview",
+    "focusSample": "Follow the color through each line. Pause, breathe, and read at your own pace.",
+    "focusFlashSample": "Read at your own pace.",
+    "focusPlay": "Play",
+    "focusPause": "Pause",
+    "focusClose": "Exit flash reading",
+    "focusPrevious": "Previous phrase",
+    "focusNext": "Next phrase",
+    "focusSettings": "Appearance",
+    "focusHint": "Swipe left / right · ← / → · Space to pause",
+    "focusEmpty": "No readable text on this page. Exit and navigate to a text page.",
+    "focusAuto": "Theme",
+    "focusClassic": "Blue / red",
+    "focusOcean": "Ocean",
+    "focusForest": "Forest",
+    "focusSunset": "Sunset",
+    "focusScope": "Gradient supports reflowable text. Flash reads the current page and continues to the next.",
+    "focusInvalidColor": "Use #RRGGBB"
   }
 }

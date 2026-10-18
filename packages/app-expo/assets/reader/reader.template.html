@@ -209,6 +209,51 @@
     let currentCustomFontFamily = '';
     let currentUseBookFonts = true;
     let currentSmoothReading = false;
+    let currentFocusReading = {};
+    let currentFocusLabels = {};
+    let focusReader = null;
+    let focusPageKey = 'initial';
+    let focusReadingActive = true;
+    function syncFocusReading(update) {
+      if (!view || !window.ReadAnyFocus) return;
+      const engine = window.ReadAnyFocus;
+      const config = engine.normalizeFocusReading(currentFocusReading);
+      getRendererContents().forEach(function(content) {
+        if (content.doc) engine.syncFocusGradient(content.doc, config, focusPageKey, currentThemeColors.fg, currentThemeColors.bg, !view.isFixedLayout);
+      });
+      if (!config.flashEnabled) {
+        if (focusReader) focusReader.destroy();
+        focusReader = null;
+        return;
+      }
+      if (!focusReader) {
+        focusReader = new engine.FlashReader({
+          host: document.getElementById('reader-container'),
+          readPage: function() { return { key: focusPageKey, text: doGetVisibleText().text || '' }; },
+          turnPage: function(direction) {
+            return engine.turnFocusPage(view, function() {
+              const distance = view.renderer && view.renderer.scrolled ? getScrollNavigationDistance() : undefined;
+              return direction === 'next' ? view.next(distance) : view.prev(distance);
+            });
+          },
+          onSettings: function() { postToRN('focusSettings', {}); },
+          onClose: function() {
+            currentFocusReading = Object.assign({}, currentFocusReading, { flashEnabled: false });
+            syncFocusReading(true);
+            postToRN('focusClose', {});
+          },
+          labels: currentFocusLabels,
+        });
+        update = true;
+      }
+      if (update) focusReader.update(config, currentThemeColors.fg, currentThemeColors.bg, currentCustomFontFamily || 'serif');
+      else focusReader.refresh();
+      if (!focusReadingActive) focusReader.pause();
+    }
+    window.setFocusReadingActive = function(active) {
+      focusReadingActive = active;
+      if (!active && focusReader) focusReader.pause();
+    };
     let tapNavigationInFlight = false;
     let tapNavigationResetTimer = null;
     let readerElement = null;
@@ -1410,6 +1455,9 @@
     // ─── Book loading ───
     async function openBook(msg) {
       const container = document.getElementById('reader-container');
+      if (focusReader) focusReader.destroy();
+      focusReader = null;
+      focusPageKey = 'initial';
       const loading = document.getElementById('loading');
       currentBookIsPdf = isPDFBookMessage(msg);
       pdfPageLightCache = {};
@@ -1553,6 +1601,7 @@
             applyRendererFlowMode(el.renderer);
           }
           applyDocStyles(doc);
+          window.ReadAnyFocus.syncFocusGradient(doc, currentFocusReading, focusPageKey, currentThemeColors.fg, currentThemeColors.bg, !el.isFixedLayout);
           if (currentBookIsPdf && typeof index === 'number') {
             pdfDocIndexMap.set(doc, index);
             applyPdfPageThemeFilter(doc, index);
@@ -1573,6 +1622,8 @@
           markLoaded();
           hideFootnoteTip();
           const detail = e.detail;
+          focusPageKey = detail.cfi || JSON.stringify([detail.section, detail.page, detail.fraction]);
+          syncFocusReading(false);
           const previousSectionIndex = currentSectionIndex;
           if (tapNavigationInFlight) {
             setTimeout(() => {
@@ -1828,6 +1879,8 @@
     function applySettings(settings) {
       if (!view || !view.renderer) return;
       const renderer = view.renderer;
+      if (settings.focusReading !== undefined) currentFocusReading = settings.focusReading;
+      if (settings.focusLabels) currentFocusLabels = settings.focusLabels;
       if (settings.justifyBodyText !== undefined) {
         currentJustifyBodyText = settings.justifyBodyText !== false;
       }
@@ -1839,6 +1892,7 @@
       // font and paragraph-spacing rules would move the transparent text layer
       // away from the canvas and render a second, misaligned copy of the text.
       if (currentBookIsPdf) {
+        syncFocusReading(true);
         if (settings.paginatedLayout !== undefined) {
           currentPaginatedLayout =
             settings.paginatedLayout === 'single' ? 'single' : 'double';
@@ -2051,6 +2105,7 @@
         currentViewMode = settings.viewMode;
         applyRendererFlowMode(renderer);
       }
+      syncFocusReading(true);
     }
 
     function getScrollNavigationDistance() {
@@ -2246,6 +2301,7 @@
       }
 
       reapplyPdfThemeFilters();
+      syncFocusReading(true);
     }
 
     // ─── PDF theme inversion (dark/sepia) with per-page smart skip ───

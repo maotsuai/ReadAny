@@ -1,6 +1,7 @@
 /**
  * ReaderSettingsPanel — bottom-sheet modal for reading display settings.
  */
+import { FocusReadingSettings } from "./FocusReadingSettings";
 import { XIcon } from "@/components/ui/Icon";
 import { useResponsiveLayout } from "@/hooks/use-responsive-layout";
 import { useColors } from "@/styles/theme";
@@ -57,7 +58,7 @@ export function ReaderSettingsPanel({ visible, readSettings, bookId, onClose, on
       <View
         style={[
           s.bottomSheet,
-          { paddingBottom: insets.bottom || 16 },
+          { paddingBottom: insets.bottom || 16, maxHeight: "85%" },
           layout.isTablet && {
             width: "100%",
           },
@@ -69,7 +70,8 @@ export function ReaderSettingsPanel({ visible, readSettings, bookId, onClose, on
             <XIcon size={18} color={colors.mutedForeground} />
           </TouchableOpacity>
         </View>
-        <ScrollView showsVerticalScrollIndicator={false}>
+        <ScrollView showsVerticalScrollIndicator={false} style={{ flexShrink: 1 }}>
+          <FocusReadingSettings value={readSettings.focusReading} onChange={(value) => onUpdateSetting("focusReading", value)} />
           {/* Font Size */}
           <View style={s.settingRow}>
             <Text style={s.settingLabel}>{t("reader.fontSize", "字号")}</Text>
