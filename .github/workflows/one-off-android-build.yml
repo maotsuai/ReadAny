@@ -1,0 +1,54 @@
+name: One-off Android Build
+run-name: Android APK · agent/adhd-test
+
+on:
+  push:
+    branches: [agent/adhd-test]
+    paths: [.github/workflows/one-off-android-build.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  android-apk:
+    if: github.repository == 'maotsuai/ReadAny'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build reader assets
+        run: pnpm --filter @readany/app-expo run build:reader
+
+      - name: Build Android APK
+        working-directory: packages/app-expo
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          APP_VARIANT: production
+          EXPO_NO_METRO_WORKSPACE_ROOT: "1"
+        run: |
+          pnpm exec eas build --platform android --profile production-apk --local --non-interactive --output="../../ReadAny-adhd-test-${GITHUB_SHA:0:7}.apk"
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReadAny-adhd-test-android-apk
+          path: ReadAny-adhd-test-*.apk
+          if-no-files-found: error
+          retention-days: 14
