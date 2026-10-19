@@ -3,7 +3,6 @@ import { useIsFocused } from "@react-navigation/native";
 import {
   FOCUS_PALETTES,
   focusFragment,
-  focusGradient,
   normalizeFocusReading,
   splitFocusText,
 } from "@readany/core/reader/focus-reading";
@@ -12,7 +11,8 @@ import type { FocusReadingSettings as FocusConfig } from "@readany/core/types/bo
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppState, Pressable, Switch, Text, TextInput, View } from "react-native";
-import { WebView } from "react-native-webview";
+import { GradientMotionControls } from "./GradientMotionControls";
+import { GradientTextPreview } from "./GradientTextPreview";
 
 function ColorField({
   label,
@@ -88,7 +88,7 @@ export function FocusReadingSettings({
   const config = normalizeFocusReading(value);
   const update = (updates: Partial<FocusConfig>) => {
     setPlaying(false);
-    onChange({ ...config, ...updates });
+    onChange(normalizeFocusReading({ ...config, ...updates }));
   };
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -109,15 +109,6 @@ export function FocusReadingSettings({
     return () => clearInterval(timer);
   }, [playing, isFocused, config.flashInterval, config.flashEnabled, fragments.length]);
   const part = focusFragment(fragments[index % fragments.length] ?? "");
-  const escapeHtml = (value: string) =>
-    value.replace(
-      /[&<>"']/g,
-      (char) =>
-        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] ?? char,
-    );
-  const first = readableFocusColor(config.gradientColor1, colors.background, colors.foreground);
-  const second = readableFocusColor(config.gradientColor2, colors.background, colors.foreground);
-  const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;padding:8px 14px;background:${colors.background};color:${colors.foreground};font:17px/1.9 serif}p{margin:0;${config.gradientEnabled ? `background-image:${focusGradient(first, second, colors.foreground)};background-clip:text;-webkit-background-clip:text;color:transparent;` : ""}}</style></head><body><p>${escapeHtml(t("settings.focusSample"))}</p></body></html>`;
   const labelStyle = { color: colors.foreground, fontSize: 14 };
   const hintStyle = { color: colors.mutedForeground, fontSize: 12, lineHeight: 18 };
   const buttonStyle = {
@@ -145,6 +136,7 @@ export function FocusReadingSettings({
           trackColor={{ true: colors.primary }}
         />
       </View>
+      <GradientMotionControls config={config} onChange={update} />
       <View
         style={{
           borderWidth: 1,
@@ -157,13 +149,12 @@ export function FocusReadingSettings({
         <Text style={{ ...hintStyle, padding: 12, paddingBottom: 0 }}>
           {t("settings.focusPreview")}
         </Text>
-        <WebView
-          originWhitelist={["about:blank"]}
-          onShouldStartLoadWithRequest={(request) => request.url === "about:blank"}
-          scrollEnabled={false}
-          javaScriptEnabled={false}
-          source={{ html }}
-          style={{ height: 132, backgroundColor: colors.background }}
+        <GradientTextPreview
+          config={config}
+          foreground={colors.foreground}
+          background={colors.background}
+          text={t("settings.focusSample")}
+          active={isFocused}
         />
       </View>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>

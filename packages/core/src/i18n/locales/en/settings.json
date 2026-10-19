@@ -629,6 +629,25 @@
     "focusForest": "Forest",
     "focusSunset": "Sunset",
     "focusScope": "Gradient supports reflowable text. Flash reads the current page and continues to the next.",
-    "focusInvalidColor": "Use #RRGGBB"
+    "focusInvalidColor": "Use #RRGGBB",
+    "focusMotion": "Animated colors",
+    "focusMotionDesc": "Screensaver-inspired color drift. Text and paper stay still.",
+    "focusMotionMode": "Color motion style",
+    "focusMotion_flow": "Color drift",
+    "focusMotion_flowDesc": "A continuous ribbon of color",
+    "focusMotion_tide": "Tidal return",
+    "focusMotion_tideDesc": "Color bands wander back and forth",
+    "focusMotion_aurora": "Soft aurora",
+    "focusMotion_auroraDesc": "Hues and bands gently unfold",
+    "focusMotion_prism": "Prism wander",
+    "focusMotion_prismDesc": "Muted hues travel the color wheel",
+    "focusMotion_wash": "Ink wash",
+    "focusMotion_washDesc": "Two pigments slowly blend and return",
+    "focusMotionRange": "Random cycle range",
+    "focusMotionFast": "Fastest cycle (seconds)",
+    "focusMotionSlow": "Slowest cycle (seconds)",
+    "focusMotionRangeHint": "8–120 s per cycle; bounds must differ by at least 4 s. Shorter is faster. Speed keeps changing randomly within this range.",
+    "focusMotionCaution": "Slow color transitions without brightness pulses. Turn off animated colors to stop. No animation can guarantee safety for every photosensitive person.",
+    "focusMotionReduced": "Reduced motion is enabled on your device. Colors remain static."
   }
 }

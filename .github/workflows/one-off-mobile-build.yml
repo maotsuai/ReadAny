@@ -1,0 +1,142 @@
+name: One-off Mobile Build
+run-name: Dynamic gradient · iOS unsigned and Android APK · agent/adhd-test
+
+on:
+  push:
+    branches: [agent/adhd-test]
+    paths: [.github/workflows/one-off-mobile-build.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  ios-unsigned:
+    if: github.repository == 'maotsuai/ReadAny'
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      APP_VARIANT: production
+      CI: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build reader assets
+        run: pnpm --filter @readany/app-expo run build:reader
+
+      - name: Install iOS native build tools
+        working-directory: packages/app-expo
+        env:
+          EAS_BUILD_PLATFORM: ios
+        run: bash scripts/eas-install-ios-build-tools.sh
+
+      - name: Generate iOS native project
+        working-directory: packages/app-expo
+        run: |
+          pnpm exec expo prebuild --platform ios --clean --no-install
+          node scripts/configure-native-variant.js
+          pod install --project-directory=ios
+
+      - name: Build unsigned iPhone app
+        working-directory: packages/app-expo
+        env:
+          RCT_NO_LAUNCH_PACKAGER: "1"
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace ios/ReadAny.xcworkspace \
+            -scheme ReadAny \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath ios/build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            clean build 2>&1 | tee ios-build.log
+
+      - name: Package unsigned IPA
+        working-directory: packages/app-expo
+        run: |
+          APP_PATH=$(find ios/build/Build/Products/Release-iphoneos -maxdepth 1 -type d -name "*.app" -print -quit)
+          test -n "$APP_PATH"
+          if codesign --verify "$APP_PATH" >/dev/null 2>&1; then
+            echo "Expected an unsigned app, but a code signature was found"
+            exit 1
+          fi
+          mkdir -p ipa/Payload
+          cp -R "$APP_PATH" ipa/Payload/
+          (
+            cd ipa
+            ditto -c -k --sequesterRsrc --keepParent Payload "../../../ReadAny-adhd-test-${GITHUB_SHA:0:7}-unsigned.ipa"
+          )
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReadAny-adhd-test-ios-unsigned
+          path: ReadAny-adhd-test-*-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload iOS build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log
+          path: packages/app-expo/ios-build.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  android-apk:
+    if: github.repository == 'maotsuai/ReadAny'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build reader assets
+        run: pnpm --filter @readany/app-expo run build:reader
+
+      - name: Build Android APK
+        working-directory: packages/app-expo
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          APP_VARIANT: production
+          EXPO_NO_METRO_WORKSPACE_ROOT: "1"
+        run: |
+          pnpm exec eas build --platform android --profile production-apk --local --non-interactive --output="../../ReadAny-adhd-test-${GITHUB_SHA:0:7}.apk"
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReadAny-adhd-test-android-apk
+          path: ReadAny-adhd-test-*.apk
+          if-no-files-found: error
+          retention-days: 14

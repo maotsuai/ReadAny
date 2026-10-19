@@ -4,6 +4,10 @@ export const DEFAULT_FOCUS_READING: Readonly<FocusReadingSettings> = {
   gradientEnabled: false,
   gradientColor1: "#355fbe",
   gradientColor2: "#ac3939",
+  gradientMotionEnabled: false,
+  gradientMotionMode: "flow",
+  gradientCycleMin: 20,
+  gradientCycleMax: 45,
   flashEnabled: false,
   flashInterval: 0.5,
   flashTextColor: "auto",
@@ -17,16 +21,40 @@ export const FOCUS_PALETTES = [
   { id: "sunset", colors: ["#ad4338", "#865b29"] },
 ] as const;
 
+export const GRADIENT_MOTION_MODES = ["flow", "tide", "aurora", "prism", "wash"] as const;
+export const GRADIENT_CYCLE_LIMITS = { min: 8, max: 120, gap: 4 } as const;
+
+/** Keep a real random range even when imported values request a fixed speed. */
+export function normalizeGradientRange(min?: number, max?: number): [number, number] {
+  const bound = (value: number | undefined, fallback: number) =>
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.round(Math.max(8, Math.min(120, value)))
+      : fallback;
+  const a = bound(min, 20);
+  const b = bound(max, 45);
+  const lower = Math.min(116, Math.min(a, b));
+  return [lower, Math.max(lower + 4, Math.max(a, b))];
+}
+
 export function normalizeFocusReading(
   value?: Partial<FocusReadingSettings> | null,
 ): FocusReadingSettings {
   const color = (v: unknown, fallback: string) =>
     typeof v === "string" && /^#[\da-f]{6}$/i.test(v) ? v.toLowerCase() : fallback;
   const interval = value?.flashInterval;
+  const [gradientCycleMin, gradientCycleMax] = normalizeGradientRange(
+    value?.gradientCycleMin,
+    value?.gradientCycleMax,
+  );
   return {
     gradientEnabled: value?.gradientEnabled === true,
     gradientColor1: color(value?.gradientColor1, DEFAULT_FOCUS_READING.gradientColor1),
     gradientColor2: color(value?.gradientColor2, DEFAULT_FOCUS_READING.gradientColor2),
+    gradientMotionEnabled: value?.gradientMotionEnabled === true,
+    gradientMotionMode:
+      GRADIENT_MOTION_MODES.find((mode) => mode === value?.gradientMotionMode) ?? "flow",
+    gradientCycleMin,
+    gradientCycleMax,
     flashEnabled: value?.flashEnabled === true,
     flashInterval:
       typeof interval === "number" && Number.isFinite(interval)

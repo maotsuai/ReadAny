@@ -4,6 +4,8 @@ import i18n from "@readany/core/i18n";
 import { focusLabels, normalizeFocusReading } from "@readany/core/reader/focus-reading";
 import {
   FlashReader,
+  setFocusGradientActive,
+  stopFocusGradient,
   syncFocusGradient,
   turnFocusPage,
 } from "@readany/core/reader/focus-reading-dom";
@@ -35,6 +37,16 @@ export function useFocusReading(options: Options) {
     const host = options.containerRef.current;
     if (!view || !host || !options.ready) return;
     let flash: FlashReader | undefined;
+    const documents = new Set<Document>();
+    const rememberDocument = (doc: Document) => {
+      for (const previous of documents) {
+        if (!previous.defaultView || previous.defaultView.frameElement?.isConnected === false) {
+          stopFocusGradient(previous);
+          documents.delete(previous);
+        }
+      }
+      documents.add(doc);
+    };
     let pageKey = `${options.bookKey}:initial`;
     const sync = (update = true) => {
       let shouldUpdate = update;
@@ -42,6 +54,7 @@ export function useFocusReading(options: Options) {
       const config = normalizeFocusReading(current.settings.focusReading);
       const contents: { doc: Document }[] = view.renderer?.getContents?.() ?? [];
       for (const { doc } of contents) {
+        rememberDocument(doc);
         syncFocusGradient(
           doc,
           config,
@@ -50,6 +63,7 @@ export function useFocusReading(options: Options) {
           current.background,
           !current.fixed,
         );
+        setFocusGradientActive(doc, current.active && !config.flashEnabled);
       }
       if (!config.flashEnabled || !current.active) {
         flash?.destroy();
@@ -95,14 +109,17 @@ export function useFocusReading(options: Options) {
     };
     const load = (event: Event) => {
       const current = latest.current;
+      const doc = (event as CustomEvent).detail.doc as Document;
+      rememberDocument(doc);
       syncFocusGradient(
-        (event as CustomEvent).detail.doc,
+        doc,
         current.settings.focusReading,
         pageKey,
         current.foreground,
         current.background,
         !current.fixed,
       );
+      setFocusGradientActive(doc, current.active && !current.settings.focusReading?.flashEnabled);
     };
     syncRef.current = () => sync();
     view.addEventListener("load", load);
@@ -111,6 +128,7 @@ export function useFocusReading(options: Options) {
     return () => {
       syncRef.current = () => {};
       flash?.destroy();
+      for (const doc of documents) stopFocusGradient(doc);
       view.removeEventListener("load", load);
       view.removeEventListener("relocate", relocate);
     };

@@ -1,3 +1,6 @@
+import { focusRgb, readableFocusColor } from "./focus-colors";
+import { GradientAnimation } from "./gradient-motion-dom";
+export { readableFocusColor } from "./focus-colors";
 import type { FocusReadingSettings } from "../types/book";
 import {
   focusFragment,
@@ -9,6 +12,18 @@ import {
 
 const MARKER = "data-readany-focus-text";
 const STYLE_ID = "readany-focus-gradient";
+const gradientAnimations = new WeakMap<Document, GradientAnimation>();
+
+export function stopFocusGradient(doc: Document) {
+  gradientAnimations.get(doc)?.destroy();
+  gradientAnimations.delete(doc);
+}
+export function setFocusGradientActive(doc: Document, active: boolean) {
+  gradientAnimations.get(doc)?.setActive(active);
+}
+export function setFocusGradientReducedMotion(doc: Document, reduced: boolean) {
+  gradientAnimations.get(doc)?.setReducedMotion(reduced);
+}
 
 /** Never split or replace book text nodes: EPUB CFIs and selections stay valid. */
 export function syncFocusGradient(
@@ -22,6 +37,7 @@ export function syncFocusGradient(
   const config = normalizeFocusReading(settings);
   let sheet = doc.getElementById(STYLE_ID);
   if (!enabled || !config.gradientEnabled) {
+    stopFocusGradient(doc);
     sheet?.remove();
     for (const node of Array.from(doc.querySelectorAll<HTMLElement>(`[${MARKER}]`))) {
       node.removeAttribute(MARKER);
@@ -38,8 +54,8 @@ export function syncFocusGradient(
   const second = readableFocusColor(config.gradientColor2, background, foreground);
   // @supports prevents transparent/invisible text on older unsupported engines.
   sheet.textContent = `@supports ((background-clip: text) or (-webkit-background-clip: text)) {
-    [${MARKER}] { background-image: ${focusGradient(first, second, foreground)} !important;
-      background-position: var(--readany-focus-offset) 0 !important;
+    [${MARKER}] { background-image: var(--readany-focus-image, ${focusGradient(first, second, foreground)}) !important;
+      background-position: calc(var(--readany-focus-offset) + var(--readany-focus-motion-shift, 0em)) 0 !important;
       background-clip: text !important; -webkit-background-clip: text !important;
       color: transparent !important; -webkit-text-fill-color: transparent !important; }
     [${MARKER}] :is(span, em, strong, b, i, a, ruby) {
@@ -47,6 +63,12 @@ export function syncFocusGradient(
     [${MARKER}] rt { color: ${foreground} !important; -webkit-text-fill-color: ${foreground} !important; }
     [${MARKER}] ::selection { color: ${foreground}; -webkit-text-fill-color: ${foreground}; background: ${first}40; }
   }`;
+  let animation = gradientAnimations.get(doc);
+  if (!animation || animation.disposed) {
+    animation = new GradientAnimation(doc.documentElement);
+    gradientAnimations.set(doc, animation);
+  }
+  animation.update(config, foreground, background);
   const phase = focusPagePhase(pageKey);
   let index = 0;
   for (const node of Array.from(doc.querySelectorAll<HTMLElement>("p, li, blockquote, dd, div"))) {
@@ -59,36 +81,6 @@ export function syncFocusGradient(
     node.setAttribute(MARKER, "");
     node.style.setProperty("--readany-focus-offset", `${((phase + index++ * 137) % 280) / 20}em`);
   }
-}
-
-function rgb(color: string): number[] {
-  const hex = color.match(/^#([\da-f]{6})$/i)?.[1];
-  if (hex) return [0, 2, 4].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
-  const values = color
-    .match(/[\d.]+/g)
-    ?.slice(0, 3)
-    .map(Number);
-  return values?.length === 3 ? values : [255, 255, 255];
-}
-function luminance(values: number[]): number {
-  return values
-    .map((v) => v / 255)
-    .map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
-    .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
-}
-/** Keep custom hues readable against the active paper, including night mode. */
-export function readableFocusColor(color: string, background: string, foreground: string): string {
-  const start = rgb(color);
-  const end = rgb(foreground);
-  const bg = luminance(rgb(background));
-  for (let step = 0; step <= 20; step++) {
-    const values = start.map((v, i) => Math.round(v + ((end[i] - v) * step) / 20));
-    const lum = luminance(values);
-    if ((Math.max(lum, bg) + 0.05) / (Math.min(lum, bg) + 0.05) >= 4.5 || step === 20) {
-      return `#${values.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
-    }
-  }
-  return foreground;
 }
 
 export interface FocusPage {
@@ -243,7 +235,7 @@ export class FlashReader {
     this.foreground = foreground;
     this.background = background;
     this.fontFamily = fontFamily;
-    this.root.style.background = `rgba(${rgb(background).join(",")},0.90)`;
+    this.root.style.background = `rgba(${focusRgb(background).join(",")},0.90)`;
     this.band.style.background = background;
     this.root.style.color = foreground;
     // Updating any setting pauses playback so the preview remains reviewable.

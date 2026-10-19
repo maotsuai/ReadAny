@@ -214,12 +214,17 @@
     let focusReader = null;
     let focusPageKey = 'initial';
     let focusReadingActive = true;
+    let focusReducedMotion = true;
     function syncFocusReading(update) {
       if (!view || !window.ReadAnyFocus) return;
       const engine = window.ReadAnyFocus;
       const config = engine.normalizeFocusReading(currentFocusReading);
       getRendererContents().forEach(function(content) {
-        if (content.doc) engine.syncFocusGradient(content.doc, config, focusPageKey, currentThemeColors.fg, currentThemeColors.bg, !view.isFixedLayout);
+        if (content.doc) {
+          engine.syncFocusGradient(content.doc, config, focusPageKey, currentThemeColors.fg, currentThemeColors.bg, !view.isFixedLayout);
+          engine.setFocusGradientActive(content.doc, focusReadingActive && !config.flashEnabled);
+          engine.setFocusGradientReducedMotion(content.doc, focusReducedMotion);
+        }
       });
       if (!config.flashEnabled) {
         if (focusReader) focusReader.destroy();
@@ -253,6 +258,15 @@
     window.setFocusReadingActive = function(active) {
       focusReadingActive = active;
       if (!active && focusReader) focusReader.pause();
+      getRendererContents().forEach(function(content) {
+        if (content.doc) window.ReadAnyFocus.setFocusGradientActive(content.doc, active && !currentFocusReading.flashEnabled);
+      });
+    };
+    window.setFocusReadingReducedMotion = function(reduced) {
+      focusReducedMotion = reduced;
+      getRendererContents().forEach(function(content) {
+        if (content.doc) window.ReadAnyFocus.setFocusGradientReducedMotion(content.doc, reduced);
+      });
     };
     let tapNavigationInFlight = false;
     let tapNavigationResetTimer = null;
@@ -1602,6 +1616,8 @@
           }
           applyDocStyles(doc);
           window.ReadAnyFocus.syncFocusGradient(doc, currentFocusReading, focusPageKey, currentThemeColors.fg, currentThemeColors.bg, !el.isFixedLayout);
+          window.ReadAnyFocus.setFocusGradientActive(doc, focusReadingActive && !currentFocusReading.flashEnabled);
+          window.ReadAnyFocus.setFocusGradientReducedMotion(doc, focusReducedMotion);
           if (currentBookIsPdf && typeof index === 'number') {
             pdfDocIndexMap.set(doc, index);
             applyPdfPageThemeFilter(doc, index);

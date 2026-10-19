@@ -4,7 +4,6 @@ import { useSettingsStore } from "@/stores/settings-store";
 import {
   FOCUS_PALETTES,
   focusFragment,
-  focusGradient,
   normalizeFocusReading,
   splitFocusText,
 } from "@readany/core/reader/focus-reading";
@@ -12,6 +11,8 @@ import { readableFocusColor } from "@readany/core/reader/focus-reading-dom";
 import type { FocusReadingSettings as FocusConfig } from "@readany/core/types/book";
 import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { GradientMotionControls } from "./GradientMotionControls";
+import { GradientTextPreview } from "./GradientTextPreview";
 
 function previewPaper() {
   const mode = document.documentElement.dataset.theme;
@@ -30,7 +31,7 @@ export function FocusReadingSettings() {
   const id = useId();
   const update = (updates: Partial<FocusConfig>) => {
     setPlaying(false);
-    updateReadSettings({ focusReading: { ...config, ...updates } });
+    updateReadSettings({ focusReading: normalizeFocusReading({ ...config, ...updates }) });
   };
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -50,8 +51,6 @@ export function FocusReadingSettings() {
       document.removeEventListener("visibilitychange", pause);
     };
   }, []);
-  const first = readableFocusColor(config.gradientColor1, paper.bg, paper.fg);
-  const second = readableFocusColor(config.gradientColor2, paper.bg, paper.fg);
   const flashText =
     config.flashTextColor === "auto"
       ? paper.fg
@@ -106,25 +105,17 @@ export function FocusReadingSettings() {
           onCheckedChange={(checked) => update({ gradientEnabled: checked })}
         />
       </div>
+      <GradientMotionControls config={config} onChange={update} />
       <div className="rounded-md border border-border/60 bg-background px-4 py-3">
         <span className="text-[10px] tracking-widest text-muted-foreground">
           {t("settings.focusPreview")}
         </span>
-        <p
-          className="mt-2 font-serif text-[17px] leading-[1.9]"
-          style={
-            config.gradientEnabled
-              ? {
-                  backgroundImage: focusGradient(first, second, paper.fg),
-                  backgroundClip: "text",
-                  WebkitBackgroundClip: "text",
-                  color: "transparent",
-                }
-              : undefined
-          }
-        >
-          {t("settings.focusSample")}
-        </p>
+        <GradientTextPreview
+          config={config}
+          foreground={paper.fg}
+          background={paper.bg}
+          text={t("settings.focusSample")}
+        />
       </div>
       <div className="grid grid-cols-2 gap-2">
         {FOCUS_PALETTES.map((palette) => (

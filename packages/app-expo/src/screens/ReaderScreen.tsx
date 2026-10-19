@@ -18,6 +18,7 @@ import {
   XIcon,
 } from "@/components/ui/Icon";
 import { SyncButton } from "@/components/ui/SyncButton";
+import { useReducedMotion } from "@/hooks/use-reduced-motion";
 import { useReaderBridge } from "@/hooks/use-reader-bridge";
 import type { RelocateEvent, SelectionEvent, VisibleTTSSegment } from "@/hooks/use-reader-bridge";
 import { startFileServer, stopFileServer } from "@/lib/reader/local-file-server";
@@ -509,6 +510,7 @@ export function ReaderScreen({ route, navigation }: Props) {
 
   // Focus & foreground state for volume paging whitelist
   const isFocused = useIsFocused();
+  const focusReducedMotion = useReducedMotion();
   const [appActive, setAppActive] = useState(true);
   useEffect(() => {
     const sub = AppState.addEventListener("change", (s: AppStateStatus) =>
@@ -1293,6 +1295,11 @@ export function ReaderScreen({ route, navigation }: Props) {
     const active = isFocused && appActive && !showSettings && !showTTS && !showTOC && !showSearch;
     bridge.webViewRef.current?.injectJavaScript(`window.setFocusReadingActive?.(${active}); true;`);
   }, [webViewReady, isFocused, appActive, showSettings, showTTS, showTOC, showSearch]);
+
+  useEffect(() => {
+    if (!webViewReady || loading) return;
+    bridge.webViewRef.current?.injectJavaScript(`window.setFocusReadingReducedMotion?.(${focusReducedMotion}); true;`);
+  }, [webViewReady, loading, focusReducedMotion]);
 
   // Re-apply font settings when custom fonts or selected font changes
   useEffect(() => {

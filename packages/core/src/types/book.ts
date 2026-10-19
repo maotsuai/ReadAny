@@ -80,6 +80,11 @@ export interface FocusReadingSettings {
   gradientEnabled: boolean;
   gradientColor1: string;
   gradientColor2: string;
+  gradientMotionEnabled: boolean;
+  gradientMotionMode: "flow" | "tide" | "aurora" | "prism" | "wash";
+  /** Seconds per cycle; speed continuously wanders between these distinct bounds. */
+  gradientCycleMin: number;
+  gradientCycleMax: number;
   flashEnabled: boolean;
   /** Seconds per fragment. Zero means manual advance only. */
   flashInterval: number;

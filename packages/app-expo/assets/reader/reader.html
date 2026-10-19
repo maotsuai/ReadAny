@@ -167,7 +167,7 @@
   var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
   var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
-  // ../core/src/reader/justified-text.ts
+  // packages/core/src/reader/justified-text.ts
   var BR_CONTAINER_SELECTOR = "p, div, blockquote, dd, li, h1, h2, h3, h4, h5, h6, td, th, section, article, caption, figcaption";
   var PIN_ATTR = "data-readany-justify-pinned";
   var ORIGINAL_ATTR = "data-readany-justify-original";
@@ -336,23 +336,67 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     };
   }
 
-  // ../core/src/reader/focus-reading.ts
+  // packages/core/src/reader/focus-colors.ts
+  function focusRgb(color) {
+    const hex2 = color.match(/^#([\da-f]{6})$/i)?.[1];
+    if (hex2) return [0, 2, 4].map((i) => Number.parseInt(hex2.slice(i, i + 2), 16));
+    const values = color.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+    return values?.length === 3 ? values : [255, 255, 255];
+  }
+  function focusLuminance(values) {
+    return values.map((v) => v / 255).map((v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4).reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+  }
+  function readableFocusColor(color, background, foreground) {
+    const start = focusRgb(color);
+    const end = focusRgb(foreground);
+    const bg = focusLuminance(focusRgb(background));
+    for (let step = 0; step <= 20; step++) {
+      const values = start.map((v, i) => Math.round(v + (end[i] - v) * step / 20));
+      const lum = focusLuminance(values);
+      if ((Math.max(lum, bg) + 0.05) / (Math.min(lum, bg) + 0.05) >= 4.5 || step === 20) {
+        return `#${values.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+      }
+    }
+    return foreground;
+  }
+
+  // packages/core/src/reader/focus-reading.ts
   var DEFAULT_FOCUS_READING = {
     gradientEnabled: false,
     gradientColor1: "#355fbe",
     gradientColor2: "#ac3939",
+    gradientMotionEnabled: false,
+    gradientMotionMode: "flow",
+    gradientCycleMin: 20,
+    gradientCycleMax: 45,
     flashEnabled: false,
     flashInterval: 0.5,
     flashTextColor: "auto",
     flashHighlightColor: "#c4473a"
   };
+  var GRADIENT_MOTION_MODES = ["flow", "tide", "aurora", "prism", "wash"];
+  function normalizeGradientRange(min, max) {
+    const bound = (value, fallback) => typeof value === "number" && Number.isFinite(value) ? Math.round(Math.max(8, Math.min(120, value))) : fallback;
+    const a = bound(min, 20);
+    const b = bound(max, 45);
+    const lower = Math.min(116, Math.min(a, b));
+    return [lower, Math.max(lower + 4, Math.max(a, b))];
+  }
   function normalizeFocusReading(value) {
     const color = (v, fallback) => typeof v === "string" && /^#[\da-f]{6}$/i.test(v) ? v.toLowerCase() : fallback;
     const interval = value?.flashInterval;
+    const [gradientCycleMin, gradientCycleMax] = normalizeGradientRange(
+      value?.gradientCycleMin,
+      value?.gradientCycleMax
+    );
     return {
       gradientEnabled: value?.gradientEnabled === true,
       gradientColor1: color(value?.gradientColor1, DEFAULT_FOCUS_READING.gradientColor1),
       gradientColor2: color(value?.gradientColor2, DEFAULT_FOCUS_READING.gradientColor2),
+      gradientMotionEnabled: value?.gradientMotionEnabled === true,
+      gradientMotionMode: GRADIENT_MOTION_MODES.find((mode) => mode === value?.gradientMotionMode) ?? "flow",
+      gradientCycleMin,
+      gradientCycleMax,
       flashEnabled: value?.flashEnabled === true,
       flashInterval: typeof interval === "number" && Number.isFinite(interval) ? Math.round(Math.min(2, Math.max(0, interval)) * 10) / 10 : DEFAULT_FOCUS_READING.flashInterval,
       flashTextColor: color(value?.flashTextColor, "auto"),
@@ -419,13 +463,309 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     };
   }
 
-  // ../core/src/reader/focus-reading-dom.ts
+  // packages/core/src/reader/gradient-motion.ts
+  var TAU = Math.PI * 2;
+  var linear = (v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  var srgb = (v) => v <= 31308e-7 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055;
+  var rgbLinear = (color) => focusRgb(color).map((v) => linear(v / 255));
+  var y = (values) => values[0] * 0.2126 + values[1] * 0.7152 + values[2] * 0.0722;
+  var hex = (values) => `#${values.map(
+    (v) => Math.round(Math.min(1, Math.max(0, srgb(v))) * 255).toString(16).padStart(2, "0")
+  ).join("")}`;
+  function motionPigment(color, degrees) {
+    const [r, g, b] = rgbLinear(color);
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    const lightness = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
+    const a = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+    const bb = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+    const angle = Math.atan2(bb, a) + degrees * Math.PI / 180;
+    let chroma = Math.min(0.08, Math.hypot(a, bb));
+    const target = focusLuminance(focusRgb(color));
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const aa = Math.cos(angle) * chroma;
+      const ab = Math.sin(angle) * chroma;
+      const ll = (lightness + 0.3963377774 * aa + 0.2158037573 * ab) ** 3;
+      const mm = (lightness - 0.1055613458 * aa - 0.0638541728 * ab) ** 3;
+      const ss = (lightness - 0.0894841775 * aa - 1.291485548 * ab) ** 3;
+      const values = [
+        4.0767416621 * ll - 3.3077115913 * mm + 0.2309699292 * ss,
+        -1.2684380046 * ll + 2.6097574011 * mm - 0.3413193965 * ss,
+        -0.0041960863 * ll - 0.7034186147 * mm + 1.707614701 * ss
+      ];
+      const scale = target / Math.max(1e-6, y(values));
+      const matched = values.map((v) => v * scale);
+      if (matched.every((v) => v >= 0 && v <= 1)) return hex(matched);
+      chroma *= 0.82;
+    }
+    return hex([target, target, target]);
+  }
+  function washPigment(a, b, weight) {
+    const first = rgbLinear(a);
+    const second = rgbLinear(b);
+    const target = y(first);
+    const mixed = first.map((v, i) => v + (second[i] - v) * weight);
+    const scale = target / Math.max(1e-6, y(mixed));
+    const matched = mixed.map((v) => v * scale);
+    let amount = 1;
+    for (const v of matched) {
+      if (v > 1) amount = Math.min(amount, (1 - target) / (v - target));
+      if (v < 0) amount = Math.min(amount, target / (target - v));
+    }
+    return hex(matched.map((v) => target + (v - target) * amount));
+  }
+  function readableMotionColor(color, foreground, background) {
+    const start = rgbLinear(readableFocusColor(color, background, foreground));
+    const end = rgbLinear(foreground);
+    const bg = focusLuminance(focusRgb(background));
+    for (let step = 0; step <= 20; step++) {
+      const candidate = hex(start.map((v, i) => v + (end[i] - v) * step / 20));
+      const lum = focusLuminance(focusRgb(candidate));
+      if ((Math.max(lum, bg) + 0.05) / (Math.min(lum, bg) + 0.05) >= 4.7) return candidate;
+    }
+    return foreground;
+  }
+  function gradientMotionFrame(config, phase, foreground, background) {
+    const p = (phase % 1 + 1) % 1;
+    const wave = Math.sin(p * TAU);
+    let angle = 155;
+    let period = 8;
+    let offset = 0;
+    let first = motionPigment(readableMotionColor(config.gradientColor1, foreground, background), 0);
+    let second = motionPigment(readableMotionColor(config.gradientColor2, foreground, background), 0);
+    switch (config.gradientMotionMode) {
+      case "flow":
+        offset = p * period / Math.sin(angle * Math.PI / 180);
+        break;
+      case "tide":
+        offset = wave * 3;
+        break;
+      case "aurora":
+        angle += wave * 6;
+        period += Math.sin(p * TAU * 2) * 0.6;
+        offset = wave * 1.5;
+        first = motionPigment(first, wave * 38);
+        second = motionPigment(second, -wave * 32);
+        break;
+      case "prism":
+        first = motionPigment(first, p * 360);
+        second = motionPigment(second, -p * 360);
+        offset = p * period / Math.sin(angle * Math.PI / 180);
+        break;
+      case "wash": {
+        const weight = (1 - Math.cos(p * TAU)) * 0.28;
+        const a = first;
+        first = washPigment(a, second, weight);
+        second = washPigment(second, a, weight);
+        offset = wave * 0.8;
+        break;
+      }
+    }
+    return {
+      image: `repeating-linear-gradient(${angle.toFixed(3)}deg, ${first} 0em, ${foreground} ${(period / 4).toFixed(3)}em, ${second} ${(period / 2).toFixed(3)}em, ${foreground} ${(period * 0.75).toFixed(3)}em, ${first} ${period.toFixed(3)}em)`,
+      offset,
+      colors: [first, second]
+    };
+  }
+  var RandomGradientClock = class {
+    constructor(min, max, random = Math.random) {
+      this.random = random;
+      __publicField(this, "phase", 0);
+      __publicField(this, "rate", 0);
+      __publicField(this, "from", 0);
+      __publicField(this, "target", 0);
+      __publicField(this, "elapsed", 0);
+      __publicField(this, "duration", 0);
+      __publicField(this, "timestamp");
+      __publicField(this, "min");
+      __publicField(this, "max");
+      [this.min, this.max] = normalizeGradientRange(min, max);
+      this.rate = this.pickRate();
+      this.nextTarget();
+    }
+    unit() {
+      const value = this.random();
+      return Number.isFinite(value) ? Math.max(0, Math.min(0.999999, value)) : 0.5;
+    }
+    pickRate() {
+      return 1 / (this.max - this.unit() * (this.max - this.min));
+    }
+    nextTarget() {
+      this.from = this.rate;
+      this.target = this.pickRate();
+      const span = 1 / this.min - 1 / this.max;
+      if (Math.abs(this.target - this.from) < span * 0.08) {
+        const unit = ((this.target - 1 / this.max) / span + 0.381966) % 1;
+        this.target = 1 / this.max + unit * span;
+      }
+      this.elapsed = 0;
+      this.duration = 3 + this.unit() * 4;
+    }
+    suspend() {
+      this.timestamp = void 0;
+    }
+    tick(timestamp) {
+      if (this.timestamp === void 0) {
+        this.timestamp = timestamp;
+        return this.phase;
+      }
+      const dt = Math.min(0.1, Math.max(0, (timestamp - this.timestamp) / 1e3));
+      this.timestamp = timestamp;
+      this.elapsed += dt;
+      const t = Math.min(1, this.elapsed / this.duration);
+      const smooth = t * t * (3 - 2 * t);
+      const previous = this.rate;
+      this.rate = this.from + (this.target - this.from) * smooth;
+      this.phase = (this.phase + (previous + this.rate) * 0.5 * dt) % 1;
+      if (t === 1) this.nextTarget();
+      return this.phase;
+    }
+  };
+
+  // packages/core/src/reader/gradient-motion-dom.ts
+  var IMAGE = "--readany-focus-image";
+  var SHIFT = "--readany-focus-motion-shift";
+  var GradientAnimation = class {
+    constructor(target) {
+      this.target = target;
+      __publicField(this, "config", normalizeFocusReading());
+      __publicField(this, "foreground", "#222222");
+      __publicField(this, "background", "#ffffff");
+      __publicField(this, "active", true);
+      __publicField(this, "reducedByHost", false);
+      __publicField(this, "clock", new RandomGradientClock(20, 45));
+      __publicField(this, "signature", "");
+      __publicField(this, "frameId");
+      __publicField(this, "lastPaint", 0);
+      __publicField(this, "media");
+      __publicField(this, "frame");
+      __publicField(this, "wasConnected", false);
+      __publicField(this, "disposed", false);
+      __publicField(this, "sync", () => {
+        if (this.disposed) return;
+        const reduced = this.reducedByHost || this.media?.matches === true;
+        const dynamic = this.config.gradientEnabled && this.config.gradientMotionEnabled;
+        const running = dynamic && !reduced && this.active && !this.target.ownerDocument.hidden;
+        this.target.dataset.readanyGradientState = !dynamic ? "static" : reduced ? "reduced" : running ? "running" : "paused";
+        if (!running) {
+          this.cancel();
+          this.paint(reduced || !dynamic);
+        } else {
+          this.paint(false);
+          if (this.frameId === void 0)
+            this.frameId = this.target.ownerDocument.defaultView?.requestAnimationFrame(this.tick);
+        }
+      });
+      __publicField(this, "tick", (timestamp) => {
+        this.frameId = void 0;
+        if (this.disposed) return;
+        if (this.frame?.isConnected) this.wasConnected = true;
+        if (!this.target.isConnected || this.wasConnected && !this.frame?.isConnected || !this.target.ownerDocument.defaultView) {
+          this.destroy();
+          return;
+        }
+        if (timestamp - this.lastPaint >= 50) {
+          this.clock.tick(timestamp);
+          this.paint(false);
+          this.lastPaint = timestamp;
+        }
+        this.frameId = this.target.ownerDocument.defaultView.requestAnimationFrame(this.tick);
+      });
+      __publicField(this, "destroy", () => {
+        if (this.disposed) return;
+        this.cancel();
+        this.disposed = true;
+        if (this.media?.removeEventListener) this.media.removeEventListener("change", this.sync);
+        else this.media?.removeListener?.(this.sync);
+        this.target.ownerDocument.removeEventListener("visibilitychange", this.sync);
+        this.target.ownerDocument.defaultView?.removeEventListener("pagehide", this.destroy);
+        this.target.style.removeProperty(IMAGE);
+        this.target.style.removeProperty(SHIFT);
+        delete this.target.dataset.readanyGradientState;
+      });
+      const doc = target.ownerDocument;
+      const win = doc.defaultView;
+      this.frame = win?.frameElement ?? null;
+      this.wasConnected = this.frame?.isConnected ?? false;
+      this.media = win?.matchMedia?.("(prefers-reduced-motion: reduce)");
+      if (this.media?.addEventListener) this.media.addEventListener("change", this.sync);
+      else this.media?.addListener?.(this.sync);
+      doc.addEventListener("visibilitychange", this.sync);
+      win?.addEventListener("pagehide", this.destroy);
+    }
+    update(settings, foreground, background, active = this.active, reduced = this.reducedByHost) {
+      if (this.disposed) return;
+      this.config = normalizeFocusReading(settings);
+      this.foreground = foreground;
+      this.background = background;
+      this.active = active;
+      this.reducedByHost = reduced;
+      const signature = `${this.config.gradientCycleMin}/${this.config.gradientCycleMax}`;
+      if (this.signature !== signature) {
+        const phase = this.clock.phase;
+        this.clock = new RandomGradientClock(
+          this.config.gradientCycleMin,
+          this.config.gradientCycleMax
+        );
+        this.clock.phase = phase;
+        this.signature = signature;
+      }
+      this.sync();
+    }
+    setActive(active) {
+      this.active = active;
+      this.sync();
+    }
+    setReducedMotion(reduced) {
+      this.reducedByHost = reduced;
+      this.sync();
+    }
+    paint(staticFrame) {
+      if (staticFrame) {
+        const a = readableFocusColor(this.config.gradientColor1, this.background, this.foreground);
+        const b = readableFocusColor(this.config.gradientColor2, this.background, this.foreground);
+        this.target.style.setProperty(IMAGE, focusGradient(a, b, this.foreground));
+        this.target.style.setProperty(SHIFT, "0em");
+      } else {
+        const frame = gradientMotionFrame(
+          this.config,
+          this.clock.phase,
+          this.foreground,
+          this.background
+        );
+        this.target.style.setProperty(IMAGE, frame.image);
+        this.target.style.setProperty(SHIFT, `${frame.offset.toFixed(5)}em`);
+      }
+    }
+    cancel() {
+      if (this.frameId !== void 0)
+        this.target.ownerDocument.defaultView?.cancelAnimationFrame(this.frameId);
+      this.frameId = void 0;
+      this.clock.suspend();
+      this.lastPaint = 0;
+    }
+  };
+
+  // packages/core/src/reader/focus-reading-dom.ts
   var MARKER = "data-readany-focus-text";
   var STYLE_ID = "readany-focus-gradient";
+  var gradientAnimations = /* @__PURE__ */ new WeakMap();
+  function stopFocusGradient(doc) {
+    gradientAnimations.get(doc)?.destroy();
+    gradientAnimations.delete(doc);
+  }
+  function setFocusGradientActive(doc, active) {
+    gradientAnimations.get(doc)?.setActive(active);
+  }
+  function setFocusGradientReducedMotion(doc, reduced) {
+    gradientAnimations.get(doc)?.setReducedMotion(reduced);
+  }
   function syncFocusGradient(doc, settings, pageKey = "", foreground = "#222222", background = "#ffffff", enabled = true) {
     const config = normalizeFocusReading(settings);
     let sheet = doc.getElementById(STYLE_ID);
     if (!enabled || !config.gradientEnabled) {
+      stopFocusGradient(doc);
       sheet?.remove();
       for (const node of Array.from(doc.querySelectorAll(`[${MARKER}]`))) {
         node.removeAttribute(MARKER);
@@ -441,8 +781,8 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     const first = readableFocusColor(config.gradientColor1, background, foreground);
     const second = readableFocusColor(config.gradientColor2, background, foreground);
     sheet.textContent = `@supports ((background-clip: text) or (-webkit-background-clip: text)) {
-    [${MARKER}] { background-image: ${focusGradient(first, second, foreground)} !important;
-      background-position: var(--readany-focus-offset) 0 !important;
+    [${MARKER}] { background-image: var(--readany-focus-image, ${focusGradient(first, second, foreground)}) !important;
+      background-position: calc(var(--readany-focus-offset) + var(--readany-focus-motion-shift, 0em)) 0 !important;
       background-clip: text !important; -webkit-background-clip: text !important;
       color: transparent !important; -webkit-text-fill-color: transparent !important; }
     [${MARKER}] :is(span, em, strong, b, i, a, ruby) {
@@ -450,6 +790,12 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     [${MARKER}] rt { color: ${foreground} !important; -webkit-text-fill-color: ${foreground} !important; }
     [${MARKER}] ::selection { color: ${foreground}; -webkit-text-fill-color: ${foreground}; background: ${first}40; }
   }`;
+    let animation = gradientAnimations.get(doc);
+    if (!animation || animation.disposed) {
+      animation = new GradientAnimation(doc.documentElement);
+      gradientAnimations.set(doc, animation);
+    }
+    animation.update(config, foreground, background);
     const phase = focusPagePhase(pageKey);
     let index = 0;
     for (const node of Array.from(doc.querySelectorAll("p, li, blockquote, dd, div"))) {
@@ -458,28 +804,6 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
       node.setAttribute(MARKER, "");
       node.style.setProperty("--readany-focus-offset", `${(phase + index++ * 137) % 280 / 20}em`);
     }
-  }
-  function rgb(color) {
-    const hex = color.match(/^#([\da-f]{6})$/i)?.[1];
-    if (hex) return [0, 2, 4].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
-    const values = color.match(/[\d.]+/g)?.slice(0, 3).map(Number);
-    return values?.length === 3 ? values : [255, 255, 255];
-  }
-  function luminance(values) {
-    return values.map((v) => v / 255).map((v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4).reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
-  }
-  function readableFocusColor(color, background, foreground) {
-    const start = rgb(color);
-    const end = rgb(foreground);
-    const bg = luminance(rgb(background));
-    for (let step = 0; step <= 20; step++) {
-      const values = start.map((v, i) => Math.round(v + (end[i] - v) * step / 20));
-      const lum = luminance(values);
-      if ((Math.max(lum, bg) + 0.05) / (Math.min(lum, bg) + 0.05) >= 4.5 || step === 20) {
-        return `#${values.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
-      }
-    }
-    return foreground;
   }
   var FlashReader = class {
     constructor(options) {
@@ -645,7 +969,7 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
       this.foreground = foreground;
       this.background = background;
       this.fontFamily = fontFamily;
-      this.root.style.background = `rgba(${rgb(background).join(",")},0.90)`;
+      this.root.style.background = `rgba(${focusRgb(background).join(",")},0.90)`;
       this.band.style.background = background;
       this.root.style.color = foreground;
       this.pause();
@@ -771,9 +1095,9 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     });
   }
 
-  // ../core/src/reader/justified-text-entry.ts
+  // packages/core/src/reader/justified-text-entry.ts
   installReadAnyJustifiedText(globalThis);
-  Object.assign(globalThis, { ReadAnyFocus: { FlashReader, syncFocusGradient, turnFocusPage, normalizeFocusReading } });
+  Object.assign(globalThis, { ReadAnyFocus: { FlashReader, syncFocusGradient, turnFocusPage, setFocusGradientActive, setFocusGradientReducedMotion, normalizeFocusReading } });
 })();
 
 </script>
@@ -829,12 +1153,17 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     let focusReader = null;
     let focusPageKey = 'initial';
     let focusReadingActive = true;
+    let focusReducedMotion = true;
     function syncFocusReading(update) {
       if (!view || !window.ReadAnyFocus) return;
       const engine = window.ReadAnyFocus;
       const config = engine.normalizeFocusReading(currentFocusReading);
       getRendererContents().forEach(function(content) {
-        if (content.doc) engine.syncFocusGradient(content.doc, config, focusPageKey, currentThemeColors.fg, currentThemeColors.bg, !view.isFixedLayout);
+        if (content.doc) {
+          engine.syncFocusGradient(content.doc, config, focusPageKey, currentThemeColors.fg, currentThemeColors.bg, !view.isFixedLayout);
+          engine.setFocusGradientActive(content.doc, focusReadingActive && !config.flashEnabled);
+          engine.setFocusGradientReducedMotion(content.doc, focusReducedMotion);
+        }
       });
       if (!config.flashEnabled) {
         if (focusReader) focusReader.destroy();
@@ -868,6 +1197,15 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     window.setFocusReadingActive = function(active) {
       focusReadingActive = active;
       if (!active && focusReader) focusReader.pause();
+      getRendererContents().forEach(function(content) {
+        if (content.doc) window.ReadAnyFocus.setFocusGradientActive(content.doc, active && !currentFocusReading.flashEnabled);
+      });
+    };
+    window.setFocusReadingReducedMotion = function(reduced) {
+      focusReducedMotion = reduced;
+      getRendererContents().forEach(function(content) {
+        if (content.doc) window.ReadAnyFocus.setFocusGradientReducedMotion(content.doc, reduced);
+      });
     };
     let tapNavigationInFlight = false;
     let tapNavigationResetTimer = null;
@@ -2217,6 +2555,8 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
           }
           applyDocStyles(doc);
           window.ReadAnyFocus.syncFocusGradient(doc, currentFocusReading, focusPageKey, currentThemeColors.fg, currentThemeColors.bg, !el.isFixedLayout);
+          window.ReadAnyFocus.setFocusGradientActive(doc, focusReadingActive && !currentFocusReading.flashEnabled);
+          window.ReadAnyFocus.setFocusGradientReducedMotion(doc, focusReducedMotion);
           if (currentBookIsPdf && typeof index === 'number') {
             pdfDocIndexMap.set(doc, index);
             applyPdfPageThemeFilter(doc, index);

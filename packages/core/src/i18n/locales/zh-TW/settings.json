@@ -629,6 +629,25 @@
     "focusForest": "森林",
     "focusSunset": "日落",
     "focusScope": "漸變適用於可重排正文；閃讀從目前頁面開始，讀完後繼續翻頁。",
-    "focusInvalidColor": "請輸入 #RRGGBB"
+    "focusInvalidColor": "請輸入 #RRGGBB",
+    "focusMotion": "動態變色",
+    "focusMotionDesc": "借鑑螢幕保護程式的緩慢流色，文字與紙張保持靜止。",
+    "focusMotionMode": "變色方式",
+    "focusMotion_flow": "流光漫遊",
+    "focusMotion_flowDesc": "色帶連續緩慢遊走",
+    "focusMotion_tide": "潮汐往返",
+    "focusMotion_tideDesc": "色帶像潮汐一樣來回舒展",
+    "focusMotion_aurora": "極光舒展",
+    "focusMotion_auroraDesc": "色相與色帶輕柔展開",
+    "focusMotion_prism": "稜鏡遊色",
+    "focusMotion_prismDesc": "低飽和色相沿色環遊走",
+    "focusMotion_wash": "水墨融色",
+    "focusMotion_washDesc": "兩種墨色緩慢交融再歸位",
+    "focusMotionRange": "隨機速度範圍",
+    "focusMotionFast": "最快一輪（秒）",
+    "focusMotionSlow": "最慢一輪（秒）",
+    "focusMotionRangeHint": "每輪約 8–120 秒，上下限至少相差 4 秒。秒數越小越快，速度會在範圍內持續隨機變化。",
+    "focusMotionCaution": "緩慢變色，不做明暗脈衝；關閉動態變色即可停止。無法保證對所有光敏人群安全。",
+    "focusMotionReduced": "系統已開啟「減少動態效果」，目前保持靜態字色。"
   }
 }
