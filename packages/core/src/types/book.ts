@@ -86,7 +86,7 @@ export interface FocusReadingSettings {
   gradientCycleMin: number;
   gradientCycleMax: number;
   flashEnabled: boolean;
-  /** Seconds per fragment. Zero means manual advance only. */
+  /** -1: continuous text strip controlled by swiping; 0: manual fragments; >0: timed fragments. */
   flashInterval: number;
   flashTextColor: string; // "auto" or #rrggbb
   flashHighlightColor: string;

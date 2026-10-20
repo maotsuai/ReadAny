@@ -1,5 +1,5 @@
 name: One-off Mobile Build
-run-name: Dynamic gradient · iOS unsigned and Android APK · agent/adhd-test
+run-name: Focus strip and vivid colors · iOS unsigned and Android APK · agent/adhd-test
 
 on:
   push:

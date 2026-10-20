@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { focusLuminance, focusRgb } from "./focus-colors";
 import {
+  FOCUS_PALETTES,
   GRADIENT_MOTION_MODES,
   normalizeFocusReading,
   normalizeGradientRange,
@@ -8,9 +9,10 @@ import {
 import { RandomGradientClock, gradientMotionFrame, motionPigment } from "./gradient-motion";
 
 describe("random gradient range", () => {
-  it("defaults old settings to static and refuses a fixed or unsafe range", () => {
+  it("defaults to static, permits 1 s cycles and refuses a fixed range", () => {
     expect(normalizeFocusReading().gradientMotionEnabled).toBe(false);
     expect(normalizeGradientRange()).toEqual([20, 45]);
+    expect(normalizeGradientRange(1, 2)).toEqual([1, 2]);
     for (const [a, b] of [
       [0, 0],
       [20, 20],
@@ -19,13 +21,27 @@ describe("random gradient range", () => {
       [Number.NaN, Number.POSITIVE_INFINITY],
     ]) {
       const [min, max] = normalizeGradientRange(a, b);
-      expect(min).toBeGreaterThanOrEqual(8);
+      expect(min).toBeGreaterThanOrEqual(1);
       expect(max).toBeLessThanOrEqual(120);
-      expect(max - min).toBeGreaterThanOrEqual(4);
+      expect(max - min).toBeGreaterThanOrEqual(1);
     }
     expect(
       normalizeFocusReading({ gradientMotionMode: "strobe" as "flow" }).gradientMotionMode,
     ).toBe("flow");
+  });
+  it("keeps the fastest random range bounded and smoothly changing", () => {
+    const clock = new RandomGradientClock(1, 2, () => 0.5);
+    const rates = new Set<number>();
+    let previous = clock.rate;
+    for (let timestamp = 0; timestamp <= 30000; timestamp += 50) {
+      clock.tick(timestamp);
+      expect(clock.rate).toBeGreaterThanOrEqual(0.5);
+      expect(clock.rate).toBeLessThanOrEqual(1);
+      expect(Math.abs(clock.rate - previous)).toBeLessThan(0.02);
+      previous = clock.rate;
+      rates.add(Number(clock.rate.toFixed(4)));
+    }
+    expect(rates.size).toBeGreaterThan(30);
   });
   it("continually varies velocity inside the range, including a constant RNG fallback", () => {
     const clock = new RandomGradientClock(8, 12, () => 0.5);
@@ -96,14 +112,22 @@ describe("quiet color modes", () => {
       ["#f5f5f5", "#121212"],
       ["#3d2b1f", "#f0e6d2"],
     ]) {
-      for (const mode of GRADIENT_MOTION_MODES) {
-        const config = normalizeFocusReading({ gradientMotionMode: mode });
-        const bg = focusLuminance(focusRgb(background));
-        for (let phase = 0; phase < 1; phase += 0.03) {
-          const frame = gradientMotionFrame(config, phase, foreground, background);
-          for (const color of frame.colors) {
-            const l = focusLuminance(focusRgb(color));
-            expect((Math.max(l, bg) + 0.05) / (Math.min(l, bg) + 0.05)).toBeGreaterThanOrEqual(4.5);
+      for (const palette of FOCUS_PALETTES) {
+        for (const mode of GRADIENT_MOTION_MODES) {
+          const config = normalizeFocusReading({
+            gradientMotionMode: mode,
+            gradientColor1: palette.colors[0],
+            gradientColor2: palette.colors[1],
+          });
+          const bg = focusLuminance(focusRgb(background));
+          for (let phase = 0; phase < 1; phase += 0.03) {
+            const frame = gradientMotionFrame(config, phase, foreground, background);
+            for (const color of frame.colors) {
+              const l = focusLuminance(focusRgb(color));
+              expect((Math.max(l, bg) + 0.05) / (Math.min(l, bg) + 0.05)).toBeGreaterThanOrEqual(
+                4.5,
+              );
+            }
           }
         }
       }

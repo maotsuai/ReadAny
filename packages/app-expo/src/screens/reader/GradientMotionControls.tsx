@@ -1,6 +1,6 @@
 import { useReducedMotion } from "@/hooks/use-reduced-motion";
 import { useColors } from "@/styles/theme";
-import { GRADIENT_MOTION_MODES } from "@readany/core/reader/focus-reading";
+import { GRADIENT_CYCLE_LIMITS, GRADIENT_MOTION_MODES } from "@readany/core/reader/focus-reading";
 import type { FocusReadingSettings } from "@readany/core/types/book";
 import { useTranslation } from "react-i18next";
 import { Pressable, Switch, Text, View } from "react-native";
@@ -15,8 +15,14 @@ export function GradientMotionControls({
   const hint = { color: colors.mutedForeground, fontSize: 11, lineHeight: 17 };
   const label = { color: colors.foreground, fontSize: 13 };
   const step = (key: "gradientCycleMin" | "gradientCycleMax", title: string) => {
-    const lower = key === "gradientCycleMin" ? 8 : config.gradientCycleMin + 4;
-    const upper = key === "gradientCycleMin" ? config.gradientCycleMax - 4 : 120;
+    const lower =
+      key === "gradientCycleMin"
+        ? GRADIENT_CYCLE_LIMITS.min
+        : config.gradientCycleMin + GRADIENT_CYCLE_LIMITS.gap;
+    const upper =
+      key === "gradientCycleMin"
+        ? config.gradientCycleMax - GRADIENT_CYCLE_LIMITS.gap
+        : GRADIENT_CYCLE_LIMITS.max;
     return (
       <View style={{ flex: 1, gap: 7 }}>
         <Text style={hint}>{title}</Text>

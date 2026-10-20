@@ -19,21 +19,26 @@ export const FOCUS_PALETTES = [
   { id: "ocean", colors: ["#226b8c", "#7350a2"] },
   { id: "forest", colors: ["#397354", "#986126"] },
   { id: "sunset", colors: ["#ad4338", "#865b29"] },
+  { id: "electric", colors: ["#1849d6", "#b51f50"] },
+  { id: "amber", colors: ["#0648bb", "#9c4a00"] },
+  { id: "orchid", colors: ["#007451", "#a12888"] },
+  { id: "signal", colors: ["#4f2db7", "#c13b19"] },
 ] as const;
 
 export const GRADIENT_MOTION_MODES = ["flow", "tide", "aurora", "prism", "wash"] as const;
-export const GRADIENT_CYCLE_LIMITS = { min: 8, max: 120, gap: 4 } as const;
+export const GRADIENT_CYCLE_LIMITS = { min: 1, max: 120, gap: 1 } as const;
 
 /** Keep a real random range even when imported values request a fixed speed. */
 export function normalizeGradientRange(min?: number, max?: number): [number, number] {
+  const limits = GRADIENT_CYCLE_LIMITS;
   const bound = (value: number | undefined, fallback: number) =>
     typeof value === "number" && Number.isFinite(value)
-      ? Math.round(Math.max(8, Math.min(120, value)))
+      ? Math.round(Math.max(limits.min, Math.min(limits.max, value)))
       : fallback;
   const a = bound(min, 20);
   const b = bound(max, 45);
-  const lower = Math.min(116, Math.min(a, b));
-  return [lower, Math.max(lower + 4, Math.max(a, b))];
+  const lower = Math.min(limits.max - limits.gap, Math.min(a, b));
+  return [lower, Math.max(lower + limits.gap, Math.max(a, b))];
 }
 
 export function normalizeFocusReading(
@@ -57,15 +62,33 @@ export function normalizeFocusReading(
     gradientCycleMax,
     flashEnabled: value?.flashEnabled === true,
     flashInterval:
-      typeof interval === "number" && Number.isFinite(interval)
-        ? Math.round(Math.min(2, Math.max(0, interval)) * 10) / 10
-        : DEFAULT_FOCUS_READING.flashInterval,
+      interval === -1
+        ? -1
+        : typeof interval === "number" && Number.isFinite(interval)
+          ? Math.round(Math.min(2, Math.max(0, interval)) * 10) / 10
+          : DEFAULT_FOCUS_READING.flashInterval,
     flashTextColor: color(value?.flashTextColor, "auto"),
     flashHighlightColor: color(
       value?.flashHighlightColor,
       DEFAULT_FOCUS_READING.flashHighlightColor,
     ),
   };
+}
+
+/** Discrete controls include -1, 0, 0.1 … 2, with no intermediate negative values. */
+export function stepFlashInterval(interval: number, direction: 1 | -1): number {
+  const position = interval === -1 ? -1 : Math.round(interval * 10);
+  const next = Math.max(-1, Math.min(20, position + direction));
+  return next === -1 ? -1 : next / 10;
+}
+
+/** Also guards re-enabling gradient colors while animated colors are selected. */
+export function needsMotionConfirmation(before: FocusReadingSettings, after: FocusReadingSettings) {
+  return (
+    after.gradientEnabled &&
+    after.gradientMotionEnabled &&
+    !(before.gradientEnabled && before.gradientMotionEnabled)
+  );
 }
 
 export function focusPagePhase(key: string): number {
@@ -164,6 +187,10 @@ export function focusLabels(t: (key: string) => string): Record<string, string> 
     settings: "focusSettings",
     hint: "focusHint",
     manual: "focusManual",
+    swipe: "focusSwipe",
+    swipeHint: "focusSwipeHint",
+    previousPage: "focusPreviousPage",
+    nextPage: "focusNextPage",
     empty: "focusEmpty",
   };
   return Object.fromEntries(

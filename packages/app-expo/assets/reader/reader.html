@@ -375,12 +375,14 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     flashHighlightColor: "#c4473a"
   };
   var GRADIENT_MOTION_MODES = ["flow", "tide", "aurora", "prism", "wash"];
+  var GRADIENT_CYCLE_LIMITS = { min: 1, max: 120, gap: 1 };
   function normalizeGradientRange(min, max) {
-    const bound = (value, fallback) => typeof value === "number" && Number.isFinite(value) ? Math.round(Math.max(8, Math.min(120, value))) : fallback;
+    const limits = GRADIENT_CYCLE_LIMITS;
+    const bound = (value, fallback) => typeof value === "number" && Number.isFinite(value) ? Math.round(Math.max(limits.min, Math.min(limits.max, value))) : fallback;
     const a = bound(min, 20);
     const b = bound(max, 45);
-    const lower = Math.min(116, Math.min(a, b));
-    return [lower, Math.max(lower + 4, Math.max(a, b))];
+    const lower = Math.min(limits.max - limits.gap, Math.min(a, b));
+    return [lower, Math.max(lower + limits.gap, Math.max(a, b))];
   }
   function normalizeFocusReading(value) {
     const color = (v, fallback) => typeof v === "string" && /^#[\da-f]{6}$/i.test(v) ? v.toLowerCase() : fallback;
@@ -398,7 +400,7 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
       gradientCycleMin,
       gradientCycleMax,
       flashEnabled: value?.flashEnabled === true,
-      flashInterval: typeof interval === "number" && Number.isFinite(interval) ? Math.round(Math.min(2, Math.max(0, interval)) * 10) / 10 : DEFAULT_FOCUS_READING.flashInterval,
+      flashInterval: interval === -1 ? -1 : typeof interval === "number" && Number.isFinite(interval) ? Math.round(Math.min(2, Math.max(0, interval)) * 10) / 10 : DEFAULT_FOCUS_READING.flashInterval,
       flashTextColor: color(value?.flashTextColor, "auto"),
       flashHighlightColor: color(
         value?.flashHighlightColor,
@@ -463,6 +465,157 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     };
   }
 
+  // packages/core/src/reader/focus-strip-dom.ts
+  var ManualFocusStrip = class {
+    constructor(host, onProgress = () => {
+    }) {
+      this.onProgress = onProgress;
+      __publicField(this, "element");
+      __publicField(this, "track");
+      __publicField(this, "characters", []);
+      __publicField(this, "centers", []);
+      __publicField(this, "index", -1);
+      __publicField(this, "text", "");
+      __publicField(this, "color", "");
+      __publicField(this, "highlight", "");
+      __publicField(this, "observer");
+      __publicField(this, "pointer", null);
+      __publicField(this, "measure", () => {
+        const anchor = this.element.clientWidth * 0.4;
+        this.track.style.paddingLeft = `${anchor}px`;
+        this.track.style.paddingRight = `${this.element.clientWidth - anchor}px`;
+        this.centers = this.characters.map((span) => span.offsetLeft + span.offsetWidth / 2 - anchor);
+        const current = Math.max(0, this.index);
+        this.element.scrollLeft = this.centers[current] ?? 0;
+        this.onScroll();
+      });
+      __publicField(this, "onScroll", () => {
+        if (!this.characters.length) {
+          this.onProgress(0, 0);
+          return;
+        }
+        let low = 0;
+        let high = this.centers.length - 1;
+        const offset = this.element.scrollLeft;
+        while (low < high) {
+          const middle = Math.floor((low + high) / 2);
+          if ((this.centers[middle] + this.centers[middle + 1]) / 2 < offset) low = middle + 1;
+          else high = middle;
+        }
+        if (low !== this.index) {
+          if (this.characters[this.index]) this.characters[this.index].style.color = this.color;
+          this.index = low;
+          this.characters[this.index].style.color = this.highlight;
+          this.element.dataset.focusCharacter = String(low);
+          this.onProgress(low + 1, this.characters.length);
+        }
+      });
+      __publicField(this, "onPointerDown", (event) => {
+        if (event.pointerType === "touch" || event.button !== 0) return;
+        this.pointer = { id: event.pointerId, x: event.clientX, left: this.element.scrollLeft };
+        this.element.setPointerCapture(event.pointerId);
+        this.element.style.cursor = "grabbing";
+      });
+      __publicField(this, "onPointerMove", (event) => {
+        if (!this.pointer || event.pointerId !== this.pointer.id) return;
+        event.preventDefault();
+        this.element.scrollLeft = this.pointer.left + this.pointer.x - event.clientX;
+        this.onScroll();
+      });
+      __publicField(this, "onPointerEnd", () => {
+        this.pointer = null;
+        this.element.style.cursor = "grab";
+      });
+      __publicField(this, "onWheel", (event) => {
+        if (event.ctrlKey || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+        event.preventDefault();
+        const unit = event.deltaMode === 1 ? 20 : event.deltaMode === 2 ? this.element.clientWidth : 1;
+        this.element.scrollLeft += event.deltaY * unit;
+        this.onScroll();
+      });
+      const doc = host.ownerDocument;
+      this.element = doc.createElement("div");
+      this.element.dataset.readanyFocusStrip = "";
+      this.element.tabIndex = 0;
+      this.element.style.cssText = "position:relative;width:100%;height:100%;min-height:80px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;touch-action:pan-x;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;user-select:none;-webkit-user-select:none;cursor:grab;";
+      this.track = doc.createElement("div");
+      this.track.style.cssText = "position:relative;display:flex;align-items:center;width:max-content;min-height:inherit;height:100%;white-space:pre;box-sizing:content-box;";
+      this.track.setAttribute("aria-hidden", "true");
+      this.element.append(this.track);
+      host.append(this.element);
+      this.element.addEventListener("scroll", this.onScroll, { passive: true });
+      this.element.addEventListener("pointerdown", this.onPointerDown);
+      this.element.addEventListener("pointermove", this.onPointerMove);
+      this.element.addEventListener("pointerup", this.onPointerEnd);
+      this.element.addEventListener("pointercancel", this.onPointerEnd);
+      this.element.addEventListener("wheel", this.onWheel, { passive: false });
+      const Observer = doc.defaultView?.ResizeObserver;
+      if (Observer) {
+        this.observer = new Observer(this.measure);
+        this.observer.observe(this.element);
+      }
+      doc.defaultView?.addEventListener("resize", this.measure);
+    }
+    update(text, color, highlight, fontFamily = "serif", fontSize = 36) {
+      const line = text.replace(/\s+/gu, " ").trim();
+      const changed = line !== this.text;
+      this.color = color;
+      this.highlight = highlight;
+      this.element.style.color = color;
+      this.element.style.fontFamily = fontFamily;
+      this.element.style.fontSize = `${fontSize}px`;
+      this.element.style.lineHeight = "1.5";
+      if (changed) {
+        this.text = line;
+        this.element.setAttribute("aria-label", line);
+        this.index = -1;
+        this.characters = graphemes(line).map((char) => {
+          const span = this.element.ownerDocument.createElement("span");
+          span.textContent = char;
+          span.style.flex = "none";
+          return span;
+        });
+        this.track.replaceChildren(...this.characters);
+      }
+      for (let i = 0; i < this.characters.length; i++)
+        this.characters[i].style.color = i === this.index ? highlight : color;
+      this.measure();
+      this.onProgress(Math.max(0, this.index + 1), this.characters.length);
+    }
+    get atStart() {
+      return this.element.scrollLeft <= (this.centers[0] ?? 0) + 1;
+    }
+    get atEnd() {
+      return this.element.scrollLeft >= (this.centers[this.centers.length - 1] ?? 0) - 1;
+    }
+    /** False means this page's edge was already reached; the reader can turn. */
+    step(direction) {
+      if (direction === 1 ? this.atEnd : this.atStart) return false;
+      this.element.scrollLeft = Math.max(
+        this.centers[0] ?? 0,
+        Math.min(
+          this.centers[this.centers.length - 1] ?? 0,
+          this.element.scrollLeft + direction * this.element.clientWidth * 0.65
+        )
+      );
+      this.onScroll();
+      return true;
+    }
+    toEnd() {
+      this.element.scrollLeft = this.centers[this.centers.length - 1] ?? 0;
+      this.onScroll();
+    }
+    toStart() {
+      this.element.scrollLeft = this.centers[0] ?? 0;
+      this.onScroll();
+    }
+    destroy() {
+      this.observer?.disconnect();
+      this.element.ownerDocument.defaultView?.removeEventListener("resize", this.measure);
+      this.element.remove();
+    }
+  };
+
   // packages/core/src/reader/gradient-motion.ts
   var TAU = Math.PI * 2;
   var linear = (v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
@@ -481,7 +634,7 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     const a = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
     const bb = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
     const angle = Math.atan2(bb, a) + degrees * Math.PI / 180;
-    let chroma = Math.min(0.08, Math.hypot(a, bb));
+    let chroma = Math.min(0.14, Math.hypot(a, bb));
     const target = focusLuminance(focusRgb(color));
     for (let attempt = 0; attempt < 40; attempt++) {
       const aa = Math.cos(angle) * chroma;
@@ -816,6 +969,11 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
       __publicField(this, "after");
       __publicField(this, "status");
       __publicField(this, "play");
+      __publicField(this, "hint");
+      __publicField(this, "previous");
+      __publicField(this, "next");
+      __publicField(this, "stripHost");
+      __publicField(this, "strip");
       __publicField(this, "timer");
       __publicField(this, "playing", false);
       __publicField(this, "busy", false);
@@ -823,6 +981,8 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
       __publicField(this, "fragments", []);
       __publicField(this, "index", 0);
       __publicField(this, "pageKey", "");
+      __publicField(this, "pageText", "");
+      __publicField(this, "stripPageKey");
       __publicField(this, "foreground", "#222222");
       __publicField(this, "background", "#ffffff");
       __publicField(this, "fontFamily", "serif");
@@ -853,7 +1013,12 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
           this.touchStart = null;
           return;
         }
-        this.touchStart = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+        this.touchStart = {
+          x: event.touches[0].clientX,
+          y: event.touches[0].clientY,
+          atStart: this.strip.atStart,
+          atEnd: this.strip.atEnd
+        };
       });
       __publicField(this, "onTouchEnd", (event) => {
         const start = this.touchStart;
@@ -862,6 +1027,13 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
         const dx = event.changedTouches[0].clientX - start.x;
         const dy = event.changedTouches[0].clientY - start.y;
         if (Math.abs(dx) < 40 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
+        if (this.config.flashInterval === -1) {
+          if (!(dx < 0 ? start.atEnd : start.atStart)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          void this.advance(dx < 0 ? 1 : -1, true);
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
         this.gestureMoved = true;
@@ -903,6 +1075,13 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
       this.after = doc.createElement("span");
       this.after.style.cssText = "position:absolute;left:calc(40% + var(--anchor-half, 0px));top:50%;transform:translateY(-50%)";
       this.band.append(this.before, this.anchor, this.after);
+      this.stripHost = doc.createElement("div");
+      this.stripHost.style.cssText = "position:absolute;inset:0;display:none;";
+      this.band.append(this.stripHost);
+      this.strip = new ManualFocusStrip(this.stripHost, (index, total) => {
+        if (this.status && this.config.flashInterval === -1)
+          this.status.textContent = total ? `${index} / ${total} \xB7 ${this.options.labels.swipe}` : this.options.labels.empty;
+      });
       for (const edge of ["top", "bottom"]) {
         const tick = doc.createElement("i");
         tick.style.cssText = `position:absolute;${edge}:0;left:40%;width:1px;height:14px;background:currentColor;opacity:.65;pointer-events:none;`;
@@ -916,33 +1095,34 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
       const controls = doc.createElement("div");
       controls.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;justify-content:center;";
       this.play = this.button(options.labels.play, () => this.toggle());
+      this.previous = this.button(
+        "\u2190",
+        () => {
+          this.pause();
+          void this.advance(-1);
+        },
+        options.labels.previous
+      );
+      this.next = this.button(
+        "\u2192",
+        () => {
+          this.pause();
+          void this.advance(1);
+        },
+        options.labels.next
+      );
       controls.append(
-        this.button(
-          "\u2190",
-          () => {
-            this.pause();
-            void this.advance(-1);
-          },
-          options.labels.previous
-        ),
+        this.previous,
         this.play,
-        this.button(
-          "\u2192",
-          () => {
-            this.pause();
-            void this.advance(1);
-          },
-          options.labels.next
-        ),
+        this.next,
         this.button(options.labels.settings, () => {
           this.pause();
           options.onSettings();
         })
       );
-      const hint = doc.createElement("span");
-      hint.textContent = options.labels.hint;
-      hint.style.opacity = "0.65";
-      footer.append(this.status, controls, hint);
+      this.hint = doc.createElement("span");
+      this.hint.style.opacity = "0.65";
+      footer.append(this.status, controls, this.hint);
       this.root.append(header, this.band, footer);
       options.host.append(this.root);
       this.root.focus({ preventScroll: true });
@@ -965,7 +1145,13 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
       return button;
     }
     update(settings, foreground, background, fontFamily = "serif") {
+      const wasManual = this.config.flashInterval === -1;
       this.config = normalizeFocusReading(settings);
+      if (wasManual !== (this.config.flashInterval === -1)) {
+        this.fragments = [];
+        this.index = 0;
+        this.stripPageKey = void 0;
+      }
       this.foreground = foreground;
       this.background = background;
       this.fontFamily = fontFamily;
@@ -978,9 +1164,10 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
     refresh() {
       if (this.disposed || this.busy) return;
       const page = this.options.readPage();
-      if (page.key !== this.pageKey || !this.fragments.length) {
+      if (page.key !== this.pageKey || page.text !== this.pageText || !this.fragments.length) {
         this.pageKey = page.key;
-        this.fragments = splitFocusText(page.text).filter((part) => part.trim());
+        this.pageText = page.text;
+        this.fragments = this.config.flashInterval === -1 ? [] : splitFocusText(page.text).filter((part) => part.trim());
         this.index = 0;
       }
       this.render();
@@ -990,7 +1177,7 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
         this.pause();
         return;
       }
-      if (this.config.flashInterval === 0 || !this.fragments.length || this.disposed || this.busy)
+      if (this.config.flashInterval <= 0 || !this.fragments.length || this.disposed || this.busy)
         return;
       this.playing = true;
       this.render();
@@ -1004,11 +1191,13 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
         }, this.config.flashInterval * 1e3);
       }
     }
-    async advance(direction) {
+    async advance(direction, turnAtEdge = false) {
       if (this.busy || this.disposed) return;
       clearTimeout(this.timer);
+      const manual = this.config.flashInterval === -1;
+      if (manual && !turnAtEdge && this.strip.step(direction)) return;
       const next = this.index + direction;
-      if (next >= 0 && next < this.fragments.length) {
+      if (!manual && next >= 0 && next < this.fragments.length) {
         this.index = next;
       } else {
         this.busy = true;
@@ -1017,13 +1206,15 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
           await this.options.turnPage(direction === 1 ? "next" : "prev");
           if (this.disposed) return;
           const page = this.options.readPage();
-          const fragments = splitFocusText(page.text).filter((part) => part.trim());
+          const pageManual = this.config.flashInterval === -1;
+          const fragments = pageManual ? page.text.trim() ? [page.text] : [] : splitFocusText(page.text).filter((part) => part.trim());
           if (page.key === oldKey || !fragments.length) {
             this.pause();
             return;
           }
           this.pageKey = page.key;
-          this.fragments = fragments;
+          this.pageText = page.text;
+          this.fragments = pageManual ? [] : fragments;
           this.index = direction === 1 ? 0 : fragments.length - 1;
         } catch {
           this.pause();
@@ -1033,11 +1224,13 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
       }
       if (this.disposed) return;
       this.render();
+      if (this.config.flashInterval === -1 && direction === -1) this.strip.toEnd();
       this.schedule();
     }
     render() {
       if (!this.status || this.disposed) return;
       const text = this.fragments[this.index] ?? "";
+      const manual = this.config.flashInterval === -1;
       const part = focusFragment(text);
       this.before.textContent = part.before;
       this.anchor.textContent = part.anchor;
@@ -1052,21 +1245,48 @@ ${rules.map((rule) => `  ${rule}`).join("\n")}
         this.background,
         this.foreground
       );
+      this.root.style.touchAction = manual ? "auto" : "pan-y";
+      this.stripHost.style.display = manual ? "block" : "none";
+      for (const node of [this.before, this.anchor, this.after])
+        node.style.display = manual ? "none" : "inline-block";
+      if (manual) {
+        this.strip.update(
+          this.pageText,
+          this.band.style.color,
+          this.anchor.style.color,
+          this.fontFamily,
+          Math.min(42, Math.max(26, available / 12))
+        );
+        if (this.stripPageKey !== this.pageKey) {
+          this.strip.toStart();
+          this.stripPageKey = this.pageKey;
+        }
+      }
+      this.status.setAttribute("aria-live", manual ? "off" : "polite");
       const bandRect = this.band.getBoundingClientRect();
       const anchorRect = this.anchor.getBoundingClientRect();
       this.band.style.setProperty("--anchor-half", `${anchorRect.width / 2}px`);
       for (const tick of Array.from(this.band.querySelectorAll("[data-tick]")))
-        tick.style.left = `${anchorRect.left - bandRect.left + anchorRect.width / 2}px`;
+        tick.style.left = manual ? "40%" : `${anchorRect.left - bandRect.left + anchorRect.width / 2}px`;
+      this.hint.textContent = manual ? this.options.labels.swipeHint : this.options.labels.hint;
+      this.previous.setAttribute(
+        "aria-label",
+        this.options.labels[manual ? "previousPage" : "previous"]
+      );
+      this.next.setAttribute("aria-label", this.options.labels[manual ? "nextPage" : "next"]);
       this.play.textContent = this.playing ? this.options.labels.pause : this.options.labels.play;
       this.play.setAttribute("aria-label", this.play.textContent);
-      this.play.disabled = this.config.flashInterval === 0 || !text;
+      this.play.disabled = this.config.flashInterval <= 0 || !text;
+      this.play.style.display = manual ? "none" : "inline-block";
       this.play.style.opacity = this.play.disabled ? "0.45" : "1";
-      this.status.textContent = text ? `${this.index + 1} / ${this.fragments.length} \xB7 ${this.config.flashInterval === 0 ? this.options.labels.manual : `${this.config.flashInterval.toFixed(1)} s`}` : this.options.labels.empty;
+      if (!manual)
+        this.status.textContent = text ? `${this.index + 1} / ${this.fragments.length} \xB7 ${this.config.flashInterval === 0 ? this.options.labels.manual : `${this.config.flashInterval.toFixed(1)} s`}` : this.options.labels.empty;
     }
     destroy() {
       this.pause();
       this.disposed = true;
       this.resizeObserver?.disconnect();
+      this.strip.destroy();
       this.options.host.ownerDocument.removeEventListener("visibilitychange", this.onVisibility);
       this.root.remove();
       if (this.previousFocus instanceof HTMLElement && this.previousFocus.isConnected)

@@ -32,7 +32,7 @@ export function motionPigment(color: string, degrees: number): string {
   const a = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
   const bb = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
   const angle = Math.atan2(bb, a) + (degrees * Math.PI) / 180;
-  let chroma = Math.min(0.08, Math.hypot(a, bb));
+  let chroma = Math.min(0.14, Math.hypot(a, bb));
   const target = focusLuminance(focusRgb(color));
   for (let attempt = 0; attempt < 40; attempt++) {
     const aa = Math.cos(angle) * chroma;

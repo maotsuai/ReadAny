@@ -3,14 +3,17 @@ import { useIsFocused } from "@react-navigation/native";
 import {
   FOCUS_PALETTES,
   focusFragment,
+  needsMotionConfirmation,
   normalizeFocusReading,
   splitFocusText,
+  stepFlashInterval,
 } from "@readany/core/reader/focus-reading";
 import { readableFocusColor } from "@readany/core/reader/focus-reading-dom";
 import type { FocusReadingSettings as FocusConfig } from "@readany/core/types/book";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { AppState, Pressable, Switch, Text, TextInput, View } from "react-native";
+import { Alert, AppState, Pressable, Switch, Text, TextInput, View } from "react-native";
+import { FocusStripPreview } from "./FocusStripPreview";
 import { GradientMotionControls } from "./GradientMotionControls";
 import { GradientTextPreview } from "./GradientTextPreview";
 
@@ -88,7 +91,18 @@ export function FocusReadingSettings({
   const config = normalizeFocusReading(value);
   const update = (updates: Partial<FocusConfig>) => {
     setPlaying(false);
-    onChange(normalizeFocusReading({ ...config, ...updates }));
+    const next = normalizeFocusReading({ ...config, ...updates });
+    if (needsMotionConfirmation(config, next)) {
+      Alert.alert(
+        t("settings.focusMotionWarningTitle"),
+        t("settings.focusMotionWarning"),
+        [
+          { text: t("settings.focusMotionCancel"), style: "cancel" },
+          { text: t("settings.focusMotionConfirm"), onPress: () => onChange(next) },
+        ],
+        { cancelable: true },
+      );
+    } else onChange(next);
   };
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -101,7 +115,7 @@ export function FocusReadingSettings({
   }, []);
   const fragments = splitFocusText(t("settings.focusSample")).filter((part) => part.trim());
   useEffect(() => {
-    if (!playing || !isFocused || !config.flashEnabled || config.flashInterval === 0) return;
+    if (!playing || !isFocused || !config.flashEnabled || config.flashInterval <= 0) return;
     const timer = setInterval(
       () => setIndex((i) => (i + 1) % fragments.length),
       config.flashInterval * 1000,
@@ -245,89 +259,115 @@ export function FocusReadingSettings({
           gap: 18,
         }}
       >
-        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 8 }}>
-          <Text
-            style={{
-              flex: 1,
-              textAlign: "right",
-              fontSize: 20,
-              color: config.flashTextColor === "auto" ? colors.foreground : config.flashTextColor,
-            }}
-            numberOfLines={1}
-          >
-            {part.before}
-          </Text>
-          <View>
-            <View
-              style={{
-                position: "absolute",
-                top: -10,
-                left: "50%",
-                height: 7,
-                width: 1,
-                backgroundColor: colors.mutedForeground,
-              }}
+        {config.flashInterval === -1 ? (
+          <>
+            <FocusStripPreview
+              text={t("settings.focusSample")}
+              color={
+                config.flashTextColor === "auto"
+                  ? colors.foreground
+                  : readableFocusColor(config.flashTextColor, colors.background, colors.foreground)
+              }
+              highlight={readableFocusColor(
+                config.flashHighlightColor,
+                colors.background,
+                colors.foreground,
+              )}
+              background={colors.background}
             />
-            <Text
-              style={{
-                fontSize: 20,
-                color: readableFocusColor(
-                  config.flashHighlightColor,
-                  colors.background,
-                  colors.foreground,
-                ),
-              }}
-            >
-              {part.anchor}
+            <Text style={{ ...hintStyle, textAlign: "center", paddingHorizontal: 12 }}>
+              {t("settings.focusSwipeHint")}
             </Text>
-            <View
-              style={{
-                position: "absolute",
-                bottom: -10,
-                left: "50%",
-                height: 7,
-                width: 1,
-                backgroundColor: colors.mutedForeground,
-              }}
-            />
-          </View>
-          <Text
-            style={{
-              flex: 1.5,
-              fontSize: 20,
-              color: config.flashTextColor === "auto" ? colors.foreground : config.flashTextColor,
-            }}
-            numberOfLines={1}
-          >
-            {part.after}
-          </Text>
-        </View>
-        <View style={{ flexDirection: "row", justifyContent: "center", gap: 12 }}>
-          <Pressable
-            accessibilityRole="button"
-            disabled={!config.flashEnabled || config.flashInterval === 0}
-            onPress={() => setPlaying((v) => !v)}
-            style={{
-              ...buttonStyle,
-              opacity: !config.flashEnabled || config.flashInterval === 0 ? 0.4 : 1,
-            }}
-          >
-            <Text style={labelStyle}>
-              {t(playing ? "settings.focusPause" : "settings.focusPlay")}
-            </Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t("settings.focusNext")}
-            style={buttonStyle}
-            onPress={() => {
-              setPlaying(false);
-              setIndex((i) => (i + 1) % fragments.length);
-            }}
-          >
-            <Text style={labelStyle}>→</Text>
-          </Pressable>
-        </View>
+          </>
+        ) : (
+          <>
+            <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 8 }}>
+              <Text
+                style={{
+                  flex: 1,
+                  textAlign: "right",
+                  fontSize: 20,
+                  color:
+                    config.flashTextColor === "auto" ? colors.foreground : config.flashTextColor,
+                }}
+                numberOfLines={1}
+              >
+                {part.before}
+              </Text>
+              <View>
+                <View
+                  style={{
+                    position: "absolute",
+                    top: -10,
+                    left: "50%",
+                    height: 7,
+                    width: 1,
+                    backgroundColor: colors.mutedForeground,
+                  }}
+                />
+                <Text
+                  style={{
+                    fontSize: 20,
+                    color: readableFocusColor(
+                      config.flashHighlightColor,
+                      colors.background,
+                      colors.foreground,
+                    ),
+                  }}
+                >
+                  {part.anchor}
+                </Text>
+                <View
+                  style={{
+                    position: "absolute",
+                    bottom: -10,
+                    left: "50%",
+                    height: 7,
+                    width: 1,
+                    backgroundColor: colors.mutedForeground,
+                  }}
+                />
+              </View>
+              <Text
+                style={{
+                  flex: 1.5,
+                  fontSize: 20,
+                  color:
+                    config.flashTextColor === "auto" ? colors.foreground : config.flashTextColor,
+                }}
+                numberOfLines={1}
+              >
+                {part.after}
+              </Text>
+            </View>
+            <View style={{ flexDirection: "row", justifyContent: "center", gap: 12 }}>
+              <Pressable
+                accessibilityRole="button"
+                disabled={!config.flashEnabled || config.flashInterval === 0}
+                onPress={() => setPlaying((v) => !v)}
+                style={{
+                  ...buttonStyle,
+                  opacity: !config.flashEnabled || config.flashInterval === 0 ? 0.4 : 1,
+                }}
+              >
+                <Text style={labelStyle}>
+                  {t(playing ? "settings.focusPause" : "settings.focusPlay")}
+                </Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t("settings.focusNext")}
+                style={buttonStyle}
+                onPress={() => {
+                  setPlaying(false);
+                  setIndex((i) => (i + 1) % fragments.length);
+                }}
+              >
+                <Text style={labelStyle}>→</Text>
+              </Pressable>
+            </View>
+          </>
+        )}
       </View>
       <View style={{ gap: 8 }}>
         <Text style={labelStyle}>{t("settings.focusInterval")}</Text>
@@ -336,30 +376,32 @@ export function FocusReadingSettings({
         >
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`${t("settings.focusInterval")} − 0.1 s`}
-            disabled={config.flashInterval === 0}
+            accessibilityLabel={`${t("settings.focusInterval")} −`}
+            disabled={config.flashInterval === -1}
             style={buttonStyle}
             onPress={() =>
               update({
-                flashInterval: Math.max(0, Math.round((config.flashInterval - 0.1) * 10) / 10),
+                flashInterval: stepFlashInterval(config.flashInterval, -1),
               })
             }
           >
             <Text style={labelStyle}>−</Text>
           </Pressable>
           <Text style={{ ...labelStyle, fontVariant: ["tabular-nums"] }}>
-            {config.flashInterval === 0
-              ? t("settings.focusManual")
-              : `${config.flashInterval.toFixed(1)} s`}
+            {config.flashInterval === -1
+              ? t("settings.focusSwipe")
+              : config.flashInterval === 0
+                ? t("settings.focusManual")
+                : `${config.flashInterval.toFixed(1)} s`}
           </Text>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`${t("settings.focusInterval")} + 0.1 s`}
+            accessibilityLabel={`${t("settings.focusInterval")} +`}
             disabled={config.flashInterval === 2}
             style={buttonStyle}
             onPress={() =>
               update({
-                flashInterval: Math.min(2, Math.round((config.flashInterval + 0.1) * 10) / 10),
+                flashInterval: stepFlashInterval(config.flashInterval, 1),
               })
             }
           >

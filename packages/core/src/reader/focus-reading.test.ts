@@ -5,17 +5,21 @@ import {
   focusGradient,
   focusPagePhase,
   graphemes,
+  needsMotionConfirmation,
   normalizeFocusReading,
   splitFocusText,
+  stepFlashInterval,
 } from "./focus-reading";
 import { readableFocusColor, turnFocusPage } from "./focus-reading-dom";
 
 describe("focus settings", () => {
   it("defaults old settings to both features off", () =>
     expect(normalizeFocusReading()).toEqual(DEFAULT_FOCUS_READING));
-  it("clamps timing to 0–2 s and rounds to tenths", () => {
+  it("retains -1 swipe mode and otherwise clamps to 0–2 s in tenths", () => {
     for (const [input, output] of [
-      [-1, 0],
+      [-1, -1],
+      [-2, 0],
+      [-0.5, 0],
       [0, 0],
       [0.1, 0.1],
       [0.26, 0.3],
@@ -25,6 +29,25 @@ describe("focus settings", () => {
       [Number.POSITIVE_INFINITY, 0.5],
     ])
       expect(normalizeFocusReading({ flashInterval: input }).flashInterval).toBe(output);
+  });
+  it("steps directly between continuous swipe, manual phrases and timed phrases", () => {
+    expect(stepFlashInterval(-1, 1)).toBe(0);
+    expect(stepFlashInterval(0, -1)).toBe(-1);
+    expect(stepFlashInterval(0, 1)).toBe(0.1);
+    expect(stepFlashInterval(0.1, -1)).toBe(0);
+    expect(stepFlashInterval(-1, -1)).toBe(-1);
+    expect(stepFlashInterval(2, 1)).toBe(2);
+  });
+  it("requires confirmation for either entry point into animated colors", () => {
+    const defaults = normalizeFocusReading();
+    const animated = normalizeFocusReading({ gradientEnabled: true, gradientMotionEnabled: true });
+    expect(needsMotionConfirmation(defaults, animated)).toBe(true);
+    expect(needsMotionConfirmation({ ...animated, gradientEnabled: false }, animated)).toBe(true);
+    expect(needsMotionConfirmation(animated, animated)).toBe(false);
+    expect(needsMotionConfirmation(animated, defaults)).toBe(false);
+    expect(needsMotionConfirmation(defaults, { ...animated, gradientMotionEnabled: false })).toBe(
+      false,
+    );
   });
   it("rejects invalid and injected CSS colors", () => {
     expect(

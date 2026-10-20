@@ -102,7 +102,7 @@ async function buildReader() {
 
     const previewResult = await esbuild.build({
       stdin: {
-        contents: `import { installGradientPreview } from "${CORE_READER.replace(/\\/g, "/")}/gradient-motion-dom"; installGradientPreview(window);`,
+        contents: `import { installGradientPreview } from "${CORE_READER.replace(/\\/g, "/")}/gradient-motion-dom"; import { installFocusStripPreview } from "${CORE_READER.replace(/\\/g, "/")}/focus-strip-dom"; installGradientPreview(window); installFocusStripPreview(window);`,
         resolveDir: CORE_READER,
         sourcefile: "gradient-preview-entry.ts",
       },

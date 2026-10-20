@@ -63,8 +63,11 @@ export function GradientMotionControls({
                     if (event.target.value)
                       onChange({
                         gradientCycleMin: Math.max(
-                          8,
-                          Math.min(config.gradientCycleMax - 4, Number(event.target.value)),
+                          GRADIENT_CYCLE_LIMITS.min,
+                          Math.min(
+                            config.gradientCycleMax - GRADIENT_CYCLE_LIMITS.gap,
+                            Number(event.target.value),
+                          ),
                         ),
                       });
                   }}
@@ -84,8 +87,11 @@ export function GradientMotionControls({
                     if (event.target.value)
                       onChange({
                         gradientCycleMax: Math.min(
-                          120,
-                          Math.max(config.gradientCycleMin + 4, Number(event.target.value)),
+                          GRADIENT_CYCLE_LIMITS.max,
+                          Math.max(
+                            config.gradientCycleMin + GRADIENT_CYCLE_LIMITS.gap,
+                            Number(event.target.value),
+                          ),
                         ),
                       });
                   }}

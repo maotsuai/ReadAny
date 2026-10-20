@@ -1,4 +1,5 @@
 import { focusRgb, readableFocusColor } from "./focus-colors";
+import { ManualFocusStrip } from "./focus-strip-dom";
 import { GradientAnimation } from "./gradient-motion-dom";
 export { readableFocusColor } from "./focus-colors";
 import type { FocusReadingSettings } from "../types/book";
@@ -106,6 +107,11 @@ export class FlashReader {
   private after: HTMLElement;
   private status: HTMLElement;
   private play: HTMLButtonElement;
+  private hint: HTMLElement;
+  private previous: HTMLButtonElement;
+  private next: HTMLButtonElement;
+  private stripHost: HTMLElement;
+  private strip: ManualFocusStrip;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private playing = false;
   private busy = false;
@@ -113,10 +119,12 @@ export class FlashReader {
   private fragments: string[] = [];
   private index = 0;
   private pageKey = "";
+  private pageText = "";
+  private stripPageKey: string | undefined;
   private foreground = "#222222";
   private background = "#ffffff";
   private fontFamily = "serif";
-  private touchStart: { x: number; y: number } | null = null;
+  private touchStart: { x: number; y: number; atStart: boolean; atEnd: boolean } | null = null;
   private gestureMoved = false;
   private resizeObserver?: ResizeObserver;
   private previousFocus: Element | null;
@@ -160,6 +168,15 @@ export class FlashReader {
     this.after.style.cssText =
       "position:absolute;left:calc(40% + var(--anchor-half, 0px));top:50%;transform:translateY(-50%)";
     this.band.append(this.before, this.anchor, this.after);
+    this.stripHost = doc.createElement("div");
+    this.stripHost.style.cssText = "position:absolute;inset:0;display:none;";
+    this.band.append(this.stripHost);
+    this.strip = new ManualFocusStrip(this.stripHost, (index, total) => {
+      if (this.status && this.config.flashInterval === -1)
+        this.status.textContent = total
+          ? `${index} / ${total} · ${this.options.labels.swipe}`
+          : this.options.labels.empty;
+    });
     for (const edge of ["top", "bottom"]) {
       const tick = doc.createElement("i");
       tick.style.cssText = `position:absolute;${edge}:0;left:40%;width:1px;height:14px;background:currentColor;opacity:.65;pointer-events:none;`;
@@ -174,33 +191,34 @@ export class FlashReader {
     const controls = doc.createElement("div");
     controls.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;justify-content:center;";
     this.play = this.button(options.labels.play, () => this.toggle());
+    this.previous = this.button(
+      "←",
+      () => {
+        this.pause();
+        void this.advance(-1);
+      },
+      options.labels.previous,
+    );
+    this.next = this.button(
+      "→",
+      () => {
+        this.pause();
+        void this.advance(1);
+      },
+      options.labels.next,
+    );
     controls.append(
-      this.button(
-        "←",
-        () => {
-          this.pause();
-          void this.advance(-1);
-        },
-        options.labels.previous,
-      ),
+      this.previous,
       this.play,
-      this.button(
-        "→",
-        () => {
-          this.pause();
-          void this.advance(1);
-        },
-        options.labels.next,
-      ),
+      this.next,
       this.button(options.labels.settings, () => {
         this.pause();
         options.onSettings();
       }),
     );
-    const hint = doc.createElement("span");
-    hint.textContent = options.labels.hint;
-    hint.style.opacity = "0.65";
-    footer.append(this.status, controls, hint);
+    this.hint = doc.createElement("span");
+    this.hint.style.opacity = "0.65";
+    footer.append(this.status, controls, this.hint);
     this.root.append(header, this.band, footer);
     options.host.append(this.root);
     this.root.focus({ preventScroll: true });
@@ -231,7 +249,13 @@ export class FlashReader {
     background: string,
     fontFamily = "serif",
   ) {
+    const wasManual = this.config.flashInterval === -1;
     this.config = normalizeFocusReading(settings);
+    if (wasManual !== (this.config.flashInterval === -1)) {
+      this.fragments = [];
+      this.index = 0;
+      this.stripPageKey = undefined;
+    }
     this.foreground = foreground;
     this.background = background;
     this.fontFamily = fontFamily;
@@ -246,9 +270,13 @@ export class FlashReader {
   refresh() {
     if (this.disposed || this.busy) return;
     const page = this.options.readPage();
-    if (page.key !== this.pageKey || !this.fragments.length) {
+    if (page.key !== this.pageKey || page.text !== this.pageText || !this.fragments.length) {
       this.pageKey = page.key;
-      this.fragments = splitFocusText(page.text).filter((part) => part.trim());
+      this.pageText = page.text;
+      this.fragments =
+        this.config.flashInterval === -1
+          ? []
+          : splitFocusText(page.text).filter((part) => part.trim());
       this.index = 0;
     }
     this.render();
@@ -266,7 +294,7 @@ export class FlashReader {
       this.pause();
       return;
     }
-    if (this.config.flashInterval === 0 || !this.fragments.length || this.disposed || this.busy)
+    if (this.config.flashInterval <= 0 || !this.fragments.length || this.disposed || this.busy)
       return;
     this.playing = true;
     this.render();
@@ -282,11 +310,13 @@ export class FlashReader {
     }
   }
 
-  private async advance(direction: 1 | -1) {
+  private async advance(direction: 1 | -1, turnAtEdge = false) {
     if (this.busy || this.disposed) return;
     clearTimeout(this.timer);
+    const manual = this.config.flashInterval === -1;
+    if (manual && !turnAtEdge && this.strip.step(direction)) return;
     const next = this.index + direction;
-    if (next >= 0 && next < this.fragments.length) {
+    if (!manual && next >= 0 && next < this.fragments.length) {
       this.index = next;
     } else {
       this.busy = true;
@@ -295,13 +325,19 @@ export class FlashReader {
         await this.options.turnPage(direction === 1 ? "next" : "prev");
         if (this.disposed) return;
         const page = this.options.readPage();
-        const fragments = splitFocusText(page.text).filter((part) => part.trim());
+        const pageManual = this.config.flashInterval === -1;
+        const fragments = pageManual
+          ? page.text.trim()
+            ? [page.text]
+            : []
+          : splitFocusText(page.text).filter((part) => part.trim());
         if (page.key === oldKey || !fragments.length) {
           this.pause();
           return;
         }
         this.pageKey = page.key;
-        this.fragments = fragments;
+        this.pageText = page.text;
+        this.fragments = pageManual ? [] : fragments;
         this.index = direction === 1 ? 0 : fragments.length - 1;
       } catch {
         this.pause();
@@ -311,12 +347,14 @@ export class FlashReader {
     }
     if (this.disposed) return;
     this.render();
+    if (this.config.flashInterval === -1 && direction === -1) this.strip.toEnd();
     this.schedule();
   }
 
   private render() {
     if (!this.status || this.disposed) return;
     const text = this.fragments[this.index] ?? "";
+    const manual = this.config.flashInterval === -1;
     const part = focusFragment(text);
     this.before.textContent = part.before;
     // Keep the ticks inside a span separate from the anchor character so
@@ -336,18 +374,46 @@ export class FlashReader {
       this.background,
       this.foreground,
     );
+    this.root.style.touchAction = manual ? "auto" : "pan-y";
+    this.stripHost.style.display = manual ? "block" : "none";
+    for (const node of [this.before, this.anchor, this.after])
+      node.style.display = manual ? "none" : "inline-block";
+    if (manual) {
+      this.strip.update(
+        this.pageText,
+        this.band.style.color,
+        this.anchor.style.color,
+        this.fontFamily,
+        Math.min(42, Math.max(26, available / 12)),
+      );
+      if (this.stripPageKey !== this.pageKey) {
+        this.strip.toStart();
+        this.stripPageKey = this.pageKey;
+      }
+    }
+    this.status.setAttribute("aria-live", manual ? "off" : "polite");
     const bandRect = this.band.getBoundingClientRect();
     const anchorRect = this.anchor.getBoundingClientRect();
     this.band.style.setProperty("--anchor-half", `${anchorRect.width / 2}px`);
     for (const tick of Array.from(this.band.querySelectorAll<HTMLElement>("[data-tick]")))
-      tick.style.left = `${anchorRect.left - bandRect.left + anchorRect.width / 2}px`;
+      tick.style.left = manual
+        ? "40%"
+        : `${anchorRect.left - bandRect.left + anchorRect.width / 2}px`;
+    this.hint.textContent = manual ? this.options.labels.swipeHint : this.options.labels.hint;
+    this.previous.setAttribute(
+      "aria-label",
+      this.options.labels[manual ? "previousPage" : "previous"],
+    );
+    this.next.setAttribute("aria-label", this.options.labels[manual ? "nextPage" : "next"]);
     this.play.textContent = this.playing ? this.options.labels.pause : this.options.labels.play;
     this.play.setAttribute("aria-label", this.play.textContent);
-    this.play.disabled = this.config.flashInterval === 0 || !text;
+    this.play.disabled = this.config.flashInterval <= 0 || !text;
+    this.play.style.display = manual ? "none" : "inline-block";
     this.play.style.opacity = this.play.disabled ? "0.45" : "1";
-    this.status.textContent = text
-      ? `${this.index + 1} / ${this.fragments.length} · ${this.config.flashInterval === 0 ? this.options.labels.manual : `${this.config.flashInterval.toFixed(1)} s`}`
-      : this.options.labels.empty;
+    if (!manual)
+      this.status.textContent = text
+        ? `${this.index + 1} / ${this.fragments.length} · ${this.config.flashInterval === 0 ? this.options.labels.manual : `${this.config.flashInterval.toFixed(1)} s`}`
+        : this.options.labels.empty;
   }
 
   private onKey = (event: KeyboardEvent) => {
@@ -367,7 +433,12 @@ export class FlashReader {
       this.touchStart = null;
       return;
     }
-    this.touchStart = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+    this.touchStart = {
+      x: event.touches[0].clientX,
+      y: event.touches[0].clientY,
+      atStart: this.strip.atStart,
+      atEnd: this.strip.atEnd,
+    };
   };
   private onTouchEnd = (event: TouchEvent) => {
     const start = this.touchStart;
@@ -376,6 +447,15 @@ export class FlashReader {
     const dx = event.changedTouches[0].clientX - start.x;
     const dy = event.changedTouches[0].clientY - start.y;
     if (Math.abs(dx) < 40 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
+    if (this.config.flashInterval === -1) {
+      // Native horizontal scrolling moves the entire line. Only a second
+      // outward swipe from an already reached edge turns the underlying page.
+      if (!(dx < 0 ? start.atEnd : start.atStart)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void this.advance(dx < 0 ? 1 : -1, true);
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     this.gestureMoved = true;
@@ -390,6 +470,7 @@ export class FlashReader {
     this.pause();
     this.disposed = true;
     this.resizeObserver?.disconnect();
+    this.strip.destroy();
     this.options.host.ownerDocument.removeEventListener("visibilitychange", this.onVisibility);
     this.root.remove();
     if (this.previousFocus instanceof HTMLElement && this.previousFocus.isConnected)
