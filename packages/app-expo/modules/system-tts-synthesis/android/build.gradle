@@ -6,6 +6,10 @@ plugins {
 group = 'expo.modules.systemttssynthesis'
 version = '0.1.0'
 
+dependencies {
+  implementation 'com.facebook.react:react-android'
+}
+
 android {
   namespace "expo.modules.systemttssynthesis"
   defaultConfig {

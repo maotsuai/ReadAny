@@ -26,7 +26,7 @@ import { DarkTheme, DefaultTheme, NavigationContainer } from "@react-navigation/
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { LogBox, Platform, Text, View } from "react-native";
+import { AppState, LogBox, Platform, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -46,11 +46,7 @@ import { setPlatformService } from "@readany/core/services";
 import { setSyncAdapter } from "@readany/core/sync";
 import { Audio } from "expo-av";
 import { I18nextProvider } from "react-i18next";
-import TrackPlayer, {
-  AppKilledPlaybackBehavior,
-  Event as TrackEvent,
-  Capability,
-} from "react-native-track-player";
+import TrackPlayer, { AppKilledPlaybackBehavior, Capability } from "react-native-track-player";
 
 import { SystemBookOpenHandler } from "@/components/library/SystemBookOpenHandler";
 import { FloatingTTSBubble } from "@/components/tts/FloatingTTSBubble";
@@ -61,7 +57,9 @@ import { ExpoPlatformService } from "@/lib/platform/expo-platform-service";
 import { subscribeRagSearchConfiguration } from "@/lib/rag/configure-search";
 import { MobileSyncAdapter } from "@/lib/sync/sync-adapter-mobile";
 import { RootNavigator } from "@/navigation/RootNavigator";
+import { initializeTTSPlaybackLifecycle } from "@/services/PlaybackService";
 import { useLibraryStore } from "@/stores/library-store";
+import { flushAllWrites } from "@/stores/persist";
 import { useSettingsStore } from "@/stores/settings-store";
 import { ThemeProvider, useTheme } from "@/styles/ThemeContext";
 import { useAutoSync } from "@readany/core/hooks/use-auto-sync";
@@ -171,30 +169,11 @@ export default function App() {
           ],
         });
 
-        // Remote event → TTS store bridge
-        const { useTTSStore: ttsStore } = await import("@/stores/tts-store");
-        TrackPlayer.addEventListener(TrackEvent.RemotePlay, () => {
-          ttsStore.getState().resume();
-        });
-        TrackPlayer.addEventListener(TrackEvent.RemotePause, () => {
-          ttsStore.getState().pause();
-        });
-        TrackPlayer.addEventListener(TrackEvent.RemoteStop, () => {
-          ttsStore.getState().stop();
-        });
-        TrackPlayer.addEventListener(TrackEvent.RemoteNext, () => {
-          const { jumpToChunk, currentChunkIndex, totalChunks } = ttsStore.getState();
-          const nextIndex = currentChunkIndex + 1;
-          if (nextIndex < totalChunks) {
-            jumpToChunk(nextIndex);
-          }
-        });
-        TrackPlayer.addEventListener(TrackEvent.RemotePrevious, () => {
-          const { jumpToChunk, currentChunkIndex } = ttsStore.getState();
-          const prevIndex = currentChunkIndex - 1;
-          if (prevIndex >= 0) {
-            jumpToChunk(prevIndex);
-          }
+        // Keep synthesis/retry/progress timers alive while Android plays TTS.
+        // Save each spoken CFI directly; a background WebView cannot relocate
+        // reliably and must not be the owner of listening progress.
+        initializeTTSPlaybackLifecycle(async (bookId, cfi) => {
+          await useLibraryStore.getState().updateBook(bookId, { currentCfi: cfi });
         });
 
         console.log("[App] bootstrap: done");
@@ -209,6 +188,13 @@ export default function App() {
     }
     bootstrap();
     return () => unsubscribeRagSearch?.();
+  }, []);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") void flushAllWrites();
+    });
+    return () => subscription.remove();
   }, []);
 
   const handleSplashFinish = useCallback(() => {

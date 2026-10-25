@@ -873,7 +873,10 @@ export function useReaderTTS({
                 queuePreview: previewTTSQueue(normalizedSegments),
               });
             }
-            ttsPlay(normalizedSegments.map((segment) => segment.text));
+            ttsPlay(
+              normalizedSegments.map((segment) => segment.text),
+              normalizedSegments.map((segment) => segment.cfi),
+            );
           }
         })();
       };
@@ -1332,7 +1335,10 @@ export function useReaderTTS({
       ttsSetCurrentLocation(playbackSegments[0]?.cfi || targetCfi);
       ttsContinuousRef.current = ttsSourceKind === "page" && ttsContinuousEnabled;
       ttsSetOnEnd(ttsContinuousRef.current ? handleTTSPageEnd : null);
-      ttsPlay(playbackSegments.map((segment) => segment.text));
+      ttsPlay(
+        playbackSegments.map((segment) => segment.text),
+        playbackSegments.map((segment) => segment.cfi),
+      );
     },
     [
       bridgeRef,
@@ -1474,6 +1480,7 @@ export function useReaderTTS({
       );
       ttsPlay(
         playbackSegments.length > 0 ? playbackSegments.map((segment) => segment.text) : normalized,
+        playbackSegments.map((segment) => segment.cfi),
       );
     },
     [
@@ -1530,7 +1537,10 @@ export function useReaderTTS({
       ttsSetCurrentLocation(selectionCfi || currentCfi);
       ttsSetCurrentBook(bookTitle, currentChapter, bookId, ttsCoverUri);
       setShowControls(false);
-      ttsPlay(segments.length > 0 ? segments.map((segment) => segment.text) : normalized);
+      ttsPlay(
+        segments.length > 0 ? segments.map((segment) => segment.text) : normalized,
+        segments.map((segment) => segment.cfi),
+      );
     },
     [
       bookId,
@@ -1557,7 +1567,6 @@ export function useReaderTTS({
     const hasActiveSession =
       ttsCurrentBookId === bookId &&
       (ttsPlayState !== "stopped" || !!(ttsCurrentText || ttsLastText).trim());
-    const isPlaying = ttsPlayState === "playing" || ttsPlayState === "loading";
     const chapterChanged =
       ttsStartChapterRef.current !== "" && ttsStartChapterRef.current !== currentChapter;
     // Selection sessions only hold the snippet the user picked; opening the
@@ -1565,7 +1574,7 @@ export function useReaderTTS({
     // surfacing a one-sentence queue.
     const isSelectionSession = ttsSourceKind === "selection";
 
-    if (hasActiveSession && isPlaying && !chapterChanged && !isSelectionSession) {
+    if (hasActiveSession && !chapterChanged && !isSelectionSession) {
       setShowControls(false);
       setShowTTS(true);
       return;
@@ -1616,6 +1625,13 @@ export function useReaderTTS({
       return;
     }
 
+    // A provider/native interruption can leave a valid session in "stopped".
+    // Resume its last native chunk instead of restarting from a stale WebView page.
+    if (ttsCurrentBookId === bookId && ttsCurrentText.trim()) {
+      ttsResume();
+      return;
+    }
+
     if (ttsSourceKind === "selection") {
       const text = (ttsCurrentText || ttsLastText).trim();
       if (text) {
@@ -1626,9 +1642,11 @@ export function useReaderTTS({
 
     await startPageTTS(ttsContinuousEnabled);
   }, [
+    bookId,
     startPageTTS,
     startSelectionTTS,
     ttsContinuousEnabled,
+    ttsCurrentBookId,
     ttsCurrentText,
     ttsLastText,
     ttsPause,
@@ -1752,7 +1770,14 @@ export function useReaderTTS({
         syncTTSChunkOffset(0);
         ttsSetCurrentLocation(nextCfi);
         if (nextCfi) bridgeRef.current?.goToCFI(nextCfi);
-        setTimeout(() => ttsPlay(allSegments.map((s) => s.text)), 0);
+        setTimeout(
+          () =>
+            ttsPlay(
+              allSegments.map((s) => s.text),
+              allSegments.map((s) => s.cfi),
+            ),
+          0,
+        );
       } else {
         const safeIdx = Math.max(0, Math.min(offsetFromCurrent, ttsSegments.length - 1));
         const sliced = ttsSegments.slice(safeIdx);
@@ -1774,7 +1799,14 @@ export function useReaderTTS({
         syncTTSChunkOffset(0);
         ttsSetCurrentLocation(nextCfi);
         if (nextCfi) bridgeRef.current?.goToCFI(nextCfi);
-        setTimeout(() => ttsPlay(sliced.map((s) => s.text)), 0);
+        setTimeout(
+          () =>
+            ttsPlay(
+              sliced.map((s) => s.text),
+              sliced.map((s) => s.cfi),
+            ),
+          0,
+        );
       }
     },
     [
@@ -1824,7 +1856,10 @@ export function useReaderTTS({
         syncTTSChunkOffset(0);
         ttsSetCurrentLocation(nextCfi);
         if (nextCfi) bridgeRef.current?.goToCFI(nextCfi);
-        ttsPlay(allSegments.map((s) => s.text));
+        ttsPlay(
+          allSegments.map((s) => s.text),
+          allSegments.map((s) => s.cfi),
+        );
         return;
       }
 
@@ -1853,7 +1888,10 @@ export function useReaderTTS({
         syncTTSChunkOffset(0);
         ttsSetCurrentLocation(nextCfi);
         if (nextCfi) bridgeRef.current?.goToCFI(nextCfi);
-        ttsPlay(remainingFuture.map((s) => s.text));
+        ttsPlay(
+          remainingFuture.map((s) => s.text),
+          remainingFuture.map((s) => s.cfi),
+        );
         void primeTTSLyricContext(
           remainingFuture[0]?.cfi || nextCfi,
           remainingFuture[0]?.cfi || nextCfi,
@@ -2175,8 +2213,8 @@ export function useReaderTTS({
     const handleAppStateChange = (nextState: AppStateStatus) => {
       if (nextState !== "active") return;
       if (!webViewReady || !bridgeRef.current) return;
-      if (ttsCurrentBookId !== bookId) return;
-      if (ttsPlayState !== "playing" && ttsPlayState !== "paused") return;
+      const state = useTTSStore.getState();
+      if (state.currentBookId !== bookId || !state.currentText) return;
       if (ttsSourceKind !== "page") return;
 
       // Small delay to let WebView fully resume before injecting JS
@@ -2191,15 +2229,7 @@ export function useReaderTTS({
 
     const subscription = AppState.addEventListener("change", handleAppStateChange);
     return () => subscription.remove();
-  }, [
-    bookId,
-    bridgeRef,
-    resolveForegroundTTSCfi,
-    ttsCurrentBookId,
-    ttsPlayState,
-    ttsSourceKind,
-    webViewReady,
-  ]);
+  }, [bookId, bridgeRef, resolveForegroundTTSCfi, ttsSourceKind, webViewReady]);
 
   useEffect(() => {
     if (!webViewReady) {
@@ -2233,42 +2263,8 @@ export function useReaderTTS({
     bookId,
   ]);
 
-  useEffect(() => {
-    if (ttsCurrentBookId !== bookId) return;
-    if (ttsSourceKind === "page") {
-      const spokenCfi = resolvedTTSSegmentCfi;
-      if (__DEV__ && spokenCfi && spokenCfi !== ttsCurrentLocationCfi) {
-        console.log("[ReaderScreen][TTS] update-current-location", {
-          currentChunkIndex: ttsCurrentChunkIndex,
-          ttsChunkOffset,
-          localTTSChunkIndex,
-          spokenCfi,
-          previousLocationCfi: ttsCurrentLocationCfi,
-          ttsSegmentsLength: ttsSegments.length,
-        });
-      }
-      if (spokenCfi && spokenCfi !== ttsCurrentLocationCfi) {
-        ttsSetCurrentLocation(spokenCfi);
-      }
-      return;
-    }
-
-    if (currentCfi && currentCfi !== ttsCurrentLocationCfi) {
-      ttsSetCurrentLocation(currentCfi);
-    }
-  }, [
-    bookId,
-    currentCfi,
-    localTTSChunkIndex,
-    resolvedTTSSegmentCfi,
-    ttsChunkOffset,
-    ttsCurrentBookId,
-    ttsCurrentChunkIndex,
-    ttsCurrentLocationCfi,
-    ttsSegments.length,
-    ttsSetCurrentLocation,
-    ttsSourceKind,
-  ]);
+  // Spoken locations are updated by the store's chunk callback. A React effect
+  // here can run late after unlocking and overwrite a newer native position.
 
   // ─── DEV-only debug effects ───────────────────────────────────────────────
   useEffect(() => {
@@ -2416,7 +2412,10 @@ export function useReaderTTS({
           });
         }
 
-        const didAppend = ttsAppend(appendSegments.map((segment) => segment.text));
+        const didAppend = ttsAppend(
+          appendSegments.map((segment) => segment.text),
+          appendSegments.map((segment) => segment.cfi),
+        );
         if (__DEV__) {
           console.log("[ReaderScreen][TTS][queue-append] append-result", {
             didAppend,

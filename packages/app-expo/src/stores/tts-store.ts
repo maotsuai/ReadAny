@@ -14,9 +14,9 @@ import TrackPlayer from "react-native-track-player";
 import { create } from "zustand";
 import { ExpoSpeechTTSPlayer } from "../lib/platform/expo-speech-player";
 import { canUseSystemTtsSynthesis } from "../lib/platform/system-tts-synthesis";
+import { TrackPlayerCloudTTSPlayer } from "../lib/platform/track-player-cloud-tts-player";
 import { TrackPlayerDashScopeTTSPlayer } from "../lib/platform/track-player-dashscope-player";
 import { TrackPlayerEdgeTTSPlayer } from "../lib/platform/track-player-edge-player";
-import { TrackPlayerCloudTTSPlayer } from "../lib/platform/track-player-cloud-tts-player";
 import { TrackPlayerSystemTTSPlayer } from "../lib/platform/track-player-system-player";
 import { withPersist } from "./persist";
 
@@ -55,6 +55,7 @@ let _openAICompatibleTTS: ITTSPlayer | null = null;
 let _activeTTS: ITTSPlayer | null = null;
 
 let _sessionSegments: string[] = [];
+let _sessionLocations: Array<string | null | undefined> = [];
 let _sessionCurrentIndex = 0;
 let _sessionGeneration = 0;
 let _sleepTimerHandle: ReturnType<typeof setTimeout> | null = null;
@@ -144,6 +145,15 @@ function normalizeSegments(text: string | string[]): string[] {
     .filter(Boolean);
 }
 
+function normalizeLocations(
+  text: string | string[],
+  locations: Array<string | null | undefined> = [],
+): Array<string | null | undefined> {
+  return Array.isArray(text)
+    ? text.flatMap((segment, index) => (segment.trim() ? [locations[index]] : []))
+    : normalizeSegments(text).map((_, index) => locations[index]);
+}
+
 function previewSessionSegments(segments: string[], limit = 8) {
   return segments.slice(0, limit).map((text, index) => ({
     index,
@@ -176,7 +186,8 @@ function syncProfileUpdatesFromLegacyFields(
   } else if (targetProvider === "openai-compatible") {
     if (updates.openaiTtsBaseUrl !== undefined) profileUpdates.baseUrl = updates.openaiTtsBaseUrl;
     if (updates.openaiTtsApiKey !== undefined) profileUpdates.apiKey = updates.openaiTtsApiKey;
-    if (updates.openaiTtsEndpoint !== undefined) profileUpdates.endpoint = updates.openaiTtsEndpoint;
+    if (updates.openaiTtsEndpoint !== undefined)
+      profileUpdates.endpoint = updates.openaiTtsEndpoint;
     if (updates.openaiTtsModel !== undefined) profileUpdates.model = updates.openaiTtsModel;
     if (updates.openaiTtsVoice !== undefined) profileUpdates.voice = updates.openaiTtsVoice;
     if (updates.openaiTtsFormat !== undefined) profileUpdates.format = updates.openaiTtsFormat;
@@ -288,6 +299,9 @@ function startPlayback(
       currentChunkIndex: absoluteIndex,
       totalChunks: _sessionSegments.length,
       currentSegmentText: _sessionSegments[absoluteIndex] || "",
+      ...(_sessionLocations[absoluteIndex]
+        ? { currentLocationCfi: _sessionLocations[absoluteIndex] as string }
+        : {}),
     });
   };
 
@@ -316,6 +330,9 @@ function startPlayback(
       currentChunkIndex: lastIndex,
       totalChunks: _sessionSegments.length,
       currentSegmentText: _sessionSegments[lastIndex] || "",
+      ...(_sessionLocations[lastIndex]
+        ? { currentLocationCfi: _sessionLocations[lastIndex] as string }
+        : {}),
     });
     get().onEnd?.();
   };
@@ -356,8 +373,8 @@ export interface TTSState {
   sleepTimerEndsAt: number | null;
   sleepTimerDurationMinutes: number | null;
 
-  play: (text: string | string[]) => void;
-  append: (text: string | string[]) => boolean;
+  play: (text: string | string[], locations?: Array<string | null | undefined>) => void;
+  append: (text: string | string[], locations?: Array<string | null | undefined>) => boolean;
   pause: () => void;
   resume: () => void;
   stop: () => void;
@@ -392,7 +409,7 @@ export const useTTSStore = create<TTSState>()(
       sleepTimerEndsAt: null,
       sleepTimerDurationMinutes: null,
 
-      play: (text: string | string[]) => {
+      play: (text, locations) => {
         clearRespeakTimer();
         const segments = normalizeSegments(text);
         const joinedText = segments.join(" ").trim();
@@ -405,6 +422,7 @@ export const useTTSStore = create<TTSState>()(
         detachAndStopAllPlayers();
         _sessionGeneration += 1;
         _sessionSegments = segments;
+        _sessionLocations = normalizeLocations(text, locations);
         _sessionCurrentIndex = 0;
 
         console.log("[TTSStore] play called", {
@@ -423,12 +441,13 @@ export const useTTSStore = create<TTSState>()(
           currentSegmentText: segments[0] || "",
           currentChunkIndex: 0,
           totalChunks: segments.length,
+          ...(_sessionLocations[0] ? { currentLocationCfi: _sessionLocations[0] as string } : {}),
         });
 
         startPlayback(segments, config, 0, set, get);
       },
 
-      append: (text: string | string[]) => {
+      append: (text, locations) => {
         const segments = normalizeSegments(text);
         const joinedText = segments.join(" ").trim();
         if (!joinedText || !_activeTTS || typeof _activeTTS.append !== "function") {
@@ -436,9 +455,11 @@ export const useTTSStore = create<TTSState>()(
         }
 
         const previousSegments = _sessionSegments;
+        const previousLocations = _sessionLocations;
         try {
-          _activeTTS.append(segments);
           _sessionSegments = [..._sessionSegments, ...segments];
+          _sessionLocations = [..._sessionLocations, ...normalizeLocations(text, locations)];
+          _activeTTS.append(segments);
           console.log("[TTSStore] append called", {
             appended: segments.length,
             previousTotal: previousSegments.length,
@@ -457,6 +478,7 @@ export const useTTSStore = create<TTSState>()(
           return true;
         } catch (error) {
           _sessionSegments = previousSegments;
+          _sessionLocations = previousLocations;
           console.warn("[TTSStore] append failed:", error);
           return false;
         }
@@ -473,6 +495,7 @@ export const useTTSStore = create<TTSState>()(
 
       resume: () => {
         console.log("[TTSStore] resume called");
+        if (isActivePlay(get().playState) && _activeTTS) return;
         if (get().playState === "paused" && _activeTTS) {
           _activeTTS.resume();
           set({ playState: "playing" });
@@ -501,6 +524,9 @@ export const useTTSStore = create<TTSState>()(
           currentSegmentText: _sessionSegments[nextIndex] || "",
           currentChunkIndex: nextIndex,
           totalChunks: _sessionSegments.length,
+          ...(_sessionLocations[nextIndex]
+            ? { currentLocationCfi: _sessionLocations[nextIndex] as string }
+            : {}),
         });
 
         startPlayback(remainingSegments, config, nextIndex, set, get);
@@ -513,6 +539,7 @@ export const useTTSStore = create<TTSState>()(
         _sessionGeneration += 1;
         detachAndStopAllPlayers();
         _sessionSegments = [];
+        _sessionLocations = [];
         _sessionCurrentIndex = 0;
         set({
           playState: "stopped",
@@ -575,6 +602,7 @@ export const useTTSStore = create<TTSState>()(
           currentChapterTitle: chapter,
           currentBookId: bookId ?? "",
           currentArtwork: artwork ?? "",
+          ...(bookId !== get().currentBookId ? { currentLocationCfi: "" } : {}),
         });
         // Sync notification bar metadata
         TrackPlayer.getActiveTrackIndex()
@@ -626,6 +654,9 @@ export const useTTSStore = create<TTSState>()(
           currentSegmentText: _sessionSegments[index] || "",
           currentChunkIndex: index,
           totalChunks: _sessionSegments.length,
+          ...(_sessionLocations[index]
+            ? { currentLocationCfi: _sessionLocations[index] as string }
+            : {}),
         });
 
         startPlayback(remainingSegments, config, index, set, get);

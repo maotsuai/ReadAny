@@ -41,6 +41,7 @@ function createPlayer(): MockPlayer {
     speak: vi.fn(() => player.onStateChange?.("playing")),
     pause: vi.fn(),
     resume: vi.fn(),
+    append: vi.fn(),
     stop: vi.fn(() => {
       player.onStateChange?.("stopped");
       player.onEnd?.();
@@ -49,7 +50,7 @@ function createPlayer(): MockPlayer {
   return player;
 }
 
-describe("Expo TTS provider failures", () => {
+describe("Expo TTS sessions", () => {
   let systemPlayer: MockPlayer;
   let dashscopePlayer: MockPlayer;
 
@@ -68,6 +69,7 @@ describe("Expo TTS provider failures", () => {
       onEnd: null,
     });
     useTTSStore.getState().stop();
+    useTTSStore.getState().updateConfig({ engine: "system" });
     vi.clearAllMocks();
   });
 
@@ -90,5 +92,59 @@ describe("Expo TTS provider failures", () => {
 
     expect(onEnd).not.toHaveBeenCalled();
     expect(useTTSStore.getState().playState).toBe("stopped");
+  });
+
+  it("tracks spoken CFIs without a mounted reader, preserving alignment across empty segments", () => {
+    useTTSStore.getState().play(["first", "  ", "third"], ["cfi-1", "cfi-2", "cfi-3"]);
+
+    systemPlayer.onChunkChange?.(1, 2);
+
+    expect(useTTSStore.getState()).toMatchObject({
+      currentChunkIndex: 1,
+      currentSegmentText: "third",
+      currentLocationCfi: "cfi-3",
+    });
+  });
+
+  it("keeps appended locations and absolute chunk positions after jumping", () => {
+    useTTSStore.getState().play(["first", "second"], ["cfi-1", "cfi-2"]);
+    useTTSStore.getState().append(["third", "fourth"], ["cfi-3", "cfi-4"]);
+    const staleChunkChange = systemPlayer.onChunkChange;
+    useTTSStore.getState().jumpToChunk(1);
+    expect(useTTSStore.getState().currentLocationCfi).toBe("cfi-2");
+
+    systemPlayer.onChunkChange?.(1, 3);
+    staleChunkChange?.(0, 2);
+
+    expect(useTTSStore.getState()).toMatchObject({
+      currentChunkIndex: 2,
+      currentSegmentText: "third",
+      currentLocationCfi: "cfi-3",
+      totalChunks: 4,
+    });
+  });
+
+  it("resumes an interrupted provider from the last spoken segment", () => {
+    useTTSStore.getState().play(["first", "second", "third"], ["cfi-1", "cfi-2", "cfi-3"]);
+    systemPlayer.onChunkChange?.(1, 3);
+    systemPlayer.onError?.(new Error("interrupted in background"));
+
+    useTTSStore.getState().resume();
+
+    expect(systemPlayer.speak).toHaveBeenLastCalledWith(["second", "third"], expect.anything());
+    expect(useTTSStore.getState().currentLocationCfi).toBe("cfi-2");
+    systemPlayer.onChunkChange?.(1, 2);
+    expect(useTTSStore.getState().currentLocationCfi).toBe("cfi-3");
+  });
+
+  it("ignores repeated play commands while a player is already active", () => {
+    useTTSStore.getState().play(["first", "second"], ["cfi-1", "cfi-2"]);
+    systemPlayer.onChunkChange?.(1, 2);
+
+    useTTSStore.getState().resume();
+    useTTSStore.getState().resume();
+
+    expect(systemPlayer.speak).toHaveBeenCalledOnce();
+    expect(useTTSStore.getState().currentLocationCfi).toBe("cfi-2");
   });
 });

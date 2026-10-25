@@ -4,6 +4,12 @@ import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.ReactContext
+import com.facebook.react.bridge.UiThreadUtil
+import com.facebook.react.jstasks.HeadlessJsTaskConfig
+import com.facebook.react.jstasks.HeadlessJsTaskContext
+import expo.modules.kotlin.functions.Queues
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
@@ -32,6 +38,8 @@ class SystemTtsSynthesisModule : Module() {
   private var tts: TextToSpeech? = null
   private var ready = false
   private var failedInit = false
+  private var playbackTaskContext: HeadlessJsTaskContext? = null
+  private var playbackTaskId: Int? = null
 
   override fun definition() = ModuleDefinition {
     Name("SystemTtsSynthesis")
@@ -41,6 +49,7 @@ class SystemTtsSynthesisModule : Module() {
     }
 
     OnDestroy {
+      UiThreadUtil.runOnUiThread { finishPlaybackTask() }
       pendingRequests.clear()
       pendingPromises.clear()
       pendingVoicePromises.clear()
@@ -48,6 +57,23 @@ class SystemTtsSynthesisModule : Module() {
       tts = null
       ready = false
     }
+
+    // RN stops JS timers when the Activity is backgrounded and no headless
+    // task is active. RNTP's listener-registration task finishes immediately;
+    // TTS still needs timers for synthesis retries, queue growth and progress.
+    // Audio and the wake lock remain owned by RNTP's media foreground service.
+    AsyncFunction("setPlaybackActive") { active: Boolean ->
+      if (active && playbackTaskId == null) {
+        val context = requireNotNull(appContext.reactContext as? ReactContext)
+        val tasks = HeadlessJsTaskContext.getInstance(context)
+        playbackTaskContext = tasks
+        playbackTaskId = tasks.startTask(
+          HeadlessJsTaskConfig("ReadAnyTTSPlayback", Arguments.createMap(), 0, true)
+        )
+      } else if (!active) {
+        finishPlaybackTask()
+      }
+    }.runOnQueue(Queues.MAIN)
 
     AsyncFunction("getVoices") { promise: Promise ->
       if (failedInit) {
@@ -84,6 +110,15 @@ class SystemTtsSynthesisModule : Module() {
       }
       synthesize(request)
     }
+  }
+
+  private fun finishPlaybackTask() {
+    val taskId = playbackTaskId ?: return
+    playbackTaskId = null
+    playbackTaskContext?.let { tasks ->
+      if (tasks.isTaskRunning(taskId)) tasks.finishTask(taskId)
+    }
+    playbackTaskContext = null
   }
 
   private fun ensureTts() {

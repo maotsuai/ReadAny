@@ -5,15 +5,37 @@
  * Without this registration, some Android devices crash when TrackPlayer
  * attempts to start its ForegroundService.
  *
- * Remote events (play/pause/stop/next/prev) are handled here and forwarded
- * to the TTS store, duplicating the handlers in App.tsx bootstrap for safety.
- * The App.tsx handlers remain as a fallback for cases where the service
- * handler hasn't loaded yet.
+ * Remote events are registered once here, independently of the Activity.
  */
+import { Platform } from "react-native";
 import TrackPlayer, { Event } from "react-native-track-player";
+import SystemTtsSynthesis from "../../modules/system-tts-synthesis";
+import { observeTTSPlayback } from "../lib/platform/tts-playback-lifecycle";
 import { useTTSStore } from "../stores/tts-store";
 
+let lifecycleInitialized = false;
+let remoteEventsRegistered = false;
+
+export function initializeTTSPlaybackLifecycle(
+  savePosition: (bookId: string, cfi: string) => Promise<void>,
+): void {
+  if (lifecycleInitialized) return;
+  lifecycleInitialized = true;
+  observeTTSPlayback(useTTSStore, {
+    savePosition,
+    setRuntimeActive: async (active) => {
+      if (Platform.OS !== "android") return;
+      if (!SystemTtsSynthesis.setPlaybackActive) {
+        throw new Error("Background TTS runtime unavailable; native rebuild required");
+      }
+      await SystemTtsSynthesis.setPlaybackActive(active);
+    },
+  });
+}
+
 export async function PlaybackService() {
+  if (remoteEventsRegistered) return;
+  remoteEventsRegistered = true;
   TrackPlayer.addEventListener(Event.RemotePlay, () => {
     useTTSStore.getState().resume();
   });

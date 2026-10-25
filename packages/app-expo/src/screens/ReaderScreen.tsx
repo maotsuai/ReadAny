@@ -368,9 +368,17 @@ export function ReaderScreen({ route, navigation }: Props) {
   // Throttled progress save (same as desktop - 5 seconds)
   const throttledSaveProgress = useRef(
     throttle((bId: string, prog: number, cfi: string) => {
+      const tts = useTTSStore.getState();
+      const spokenCfi =
+        tts.currentBookId === bId &&
+        (tts.playState === "playing" ||
+          tts.playState === "loading" ||
+          AppState.currentState !== "active")
+          ? tts.currentLocationCfi
+          : "";
       updateBook(bId, {
         progress: prog,
-        currentCfi: cfi,
+        currentCfi: spokenCfi || cfi,
       });
     }, 5000),
   ).current;
@@ -1135,12 +1143,17 @@ export function ReaderScreen({ route, navigation }: Props) {
         fileServerRef.current = null;
       }
       if (lastCfiRef.current) {
+        const tts = useTTSStore.getState();
+        const spokenCfi =
+          tts.currentBookId === bookId && tts.playState !== "stopped"
+            ? tts.currentLocationCfi
+            : "";
         const db = require("@readany/core/db/database");
         runWithDbRetry(
           () =>
             db.updateBook(bookId, {
               progress: progressRef.current,
-              currentCfi: lastCfiRef.current,
+              currentCfi: spokenCfi || lastCfiRef.current,
             }),
           { attempts: 10, initialDelayMs: 150 },
         ).catch((err: Error) => console.error("Failed to save progress on unmount:", err));

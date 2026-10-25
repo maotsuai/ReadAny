@@ -3,6 +3,7 @@ import "react-native-get-random-values";
 import * as ExpoCrypto from "expo-crypto";
 
 import { registerRootComponent } from "expo";
+import { AppRegistry } from "react-native";
 import TrackPlayer from "react-native-track-player";
 import App from "./src/App";
 import { PlaybackService } from "./src/services/PlaybackService";
@@ -71,5 +72,8 @@ if (!cryptoObject.subtle) {
   });
 }
 
+// Native code finishes this task on pause/stop/module destruction. Its pending
+// promise keeps RN's timer scheduler alive only while TTS needs background JS.
+AppRegistry.registerHeadlessTask("ReadAnyTTSPlayback", () => () => new Promise(() => {}));
 registerRootComponent(App);
 TrackPlayer.registerPlaybackService(() => PlaybackService);

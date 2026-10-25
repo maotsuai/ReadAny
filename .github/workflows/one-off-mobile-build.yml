@@ -1,5 +1,5 @@
 name: One-off Mobile Build
-run-name: Focus strip and vivid colors · iOS unsigned and Android APK · agent/adhd-test
+run-name: TTS background playback fix · iOS unsigned and Android APK · agent/adhd-test
 
 on:
   push:
@@ -9,9 +9,15 @@ on:
 permissions:
   contents: read
 
+env:
+  EXPO_NO_TELEMETRY: "1"
+
 jobs:
   ios-unsigned:
-    if: github.repository == 'maotsuai/ReadAny'
+    if: >-
+      github.repository == 'maotsuai/ReadAny' &&
+      github.ref == 'refs/heads/agent/adhd-test' &&
+      contains(github.event.head_commit.message, '[mobile-build-once:tts-20261026]')
     runs-on: macos-latest
     timeout-minutes: 90
     env:
@@ -78,14 +84,14 @@ jobs:
           cp -R "$APP_PATH" ipa/Payload/
           (
             cd ipa
-            ditto -c -k --sequesterRsrc --keepParent Payload "../../../ReadAny-adhd-test-${GITHUB_SHA:0:7}-unsigned.ipa"
+            ditto -c -k --sequesterRsrc --keepParent Payload "../../../ReadAny-tts-background-${GITHUB_SHA:0:7}-unsigned.ipa"
           )
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: ReadAny-adhd-test-ios-unsigned
-          path: ReadAny-adhd-test-*-unsigned.ipa
+          name: ReadAny-tts-background-ios-unsigned
+          path: ReadAny-tts-background-*-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
 
@@ -99,9 +105,16 @@ jobs:
           retention-days: 7
 
   android-apk:
-    if: github.repository == 'maotsuai/ReadAny'
+    if: >-
+      github.repository == 'maotsuai/ReadAny' &&
+      github.ref == 'refs/heads/agent/adhd-test' &&
+      contains(github.event.head_commit.message, '[mobile-build-once:tts-20261026]')
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      APP_VARIANT: production
+      CI: "1"
+      EXPO_NO_METRO_WORKSPACE_ROOT: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -124,19 +137,39 @@ jobs:
       - name: Build reader assets
         run: pnpm --filter @readany/app-expo run build:reader
 
-      - name: Build Android APK
+      - name: Generate Android native project
         working-directory: packages/app-expo
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-          APP_VARIANT: production
-          EXPO_NO_METRO_WORKSPACE_ROOT: "1"
         run: |
-          pnpm exec eas build --platform android --profile production-apk --local --non-interactive --output="../../ReadAny-adhd-test-${GITHUB_SHA:0:7}.apk"
+          pnpm exec expo prebuild --platform android --clean --no-install
+
+      # Build with the generated project's test signing key. Avoid EAS remote
+      # credentials and version auto-increments for this branch-only test build.
+      - name: Build Android test APK
+        working-directory: packages/app-expo/android
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon 2>&1 | tee ../android-build.log
+
+      - name: Package Android APK
+        working-directory: packages/app-expo
+        run: |
+          APK_PATH=$(find android/app/build/outputs/apk/release -maxdepth 1 -type f -name "*.apk" -print -quit)
+          test -n "$APK_PATH"
+          cp "$APK_PATH" "../../ReadAny-tts-background-${GITHUB_SHA:0:7}.apk"
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
-          name: ReadAny-adhd-test-android-apk
-          path: ReadAny-adhd-test-*.apk
+          name: ReadAny-tts-background-android-apk
+          path: ReadAny-tts-background-*.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload Android build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-log
+          path: packages/app-expo/android-build.log
+          if-no-files-found: ignore
+          retention-days: 7

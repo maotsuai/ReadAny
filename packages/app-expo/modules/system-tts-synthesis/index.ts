@@ -2,6 +2,8 @@ import { NativeModule, requireNativeModule } from "expo";
 import { Platform } from "react-native";
 
 declare class SystemTtsSynthesisModule extends NativeModule {
+  /** Android only: keep JS timers running for the lifetime of active TTS. */
+  setPlaybackActive?(active: boolean): Promise<void>;
   getVoices(): Promise<
     Array<{
       identifier: string;
